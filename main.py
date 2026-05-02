@@ -80,3 +80,20 @@ while True:
             print("Erro:", e)
 
     time.sleep(60)
+    import time
+
+print("BOT INICIADO COM SUCESSO...")
+
+while True:
+    try:
+        print("Bot rodando 24h...")
+        
+        # CHAME SUA FUNÇÃO PRINCIPAL AQUI
+        # exemplo:
+        # run_strategy()
+
+        time.sleep(60)  # roda a cada 60 segundos
+
+    except Exception as e:
+        print("Erro:", e)
+        time.sleep(30)
