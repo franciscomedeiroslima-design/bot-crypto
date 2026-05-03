@@ -22,7 +22,7 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# Pega as chaves que você vai cadastrar no painel do Render
+# Pega as chaves que você cadastrou no painel do Render
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
@@ -34,15 +34,17 @@ symbols = [
 sent_alerts = {}
 
 # ==========================================
-# PARTE 2: O MIOLO (Suas Funções de Análise)
+# PARTE 2: O MIOLO (Funções de Análise)
 # ==========================================
 
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
-    except:
-        pass
+        # Ajuste para descobrir o erro: agora o bot imprime a resposta do Telegram no Log
+        response = requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+        print(f"Resposta do Telegram: {response.json()}") 
+    except Exception as e:
+        print(f"Erro ao enviar: {e}")
 
 def get_data(symbol):
     url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
@@ -103,15 +105,14 @@ def check(symbol, btc_up, btc_down):
 # ==========================================
 
 if __name__ == "__main__":
-    # 1. Liga o servidor para o Render não dormir
-    keep_alive()[cite: 1]
-
-    # 2. Envia uma mensagem de teste para confirmar que o TOKEN/ID estão certos
-    send("🤖 Bot iniciado com sucesso no Render!")[cite: 1]
-    # 3. Inicia o monitoramento do mercado
+    keep_alive() # Liga o servidor para o Render não dormir
+    
+    # Mensagem de teste para conferir se TOKEN e CHAT_ID funcionam
+    send("🤖 Bot iniciado com sucesso no Render!")
+    
     while True:
         try:
-            # Otimização: Checa o BTC uma vez por minuto
+            # Otimização: Checa o BTC uma vez por minuto[cite: 1]
             df_btc = get_data("BTCUSDT")
             df_btc['sma21'] = df_btc['close'].rolling(21).mean()
             btc_up = df_btc.iloc[-1]['close'] > df_btc.iloc[-1]['sma21']
@@ -120,7 +121,6 @@ if __name__ == "__main__":
             for s in symbols:
                 check(s, btc_up, btc_down)
                 time.sleep(1) # Pausa curta para não travar
-                
         except Exception as e:
             print(f"Erro no loop: {e}")
             
