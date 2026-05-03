@@ -1,97 +1,122 @@
+# ==========================================
+# PARTE 1: O TOPO (Configurações e Segurança)
+# ==========================================
+from flask import Flask
+from threading import Thread
+import os
 import requests
-import time
 import pandas as pd
+import numpy as np
+import time
 
-# =========================
-# CONFIG
-# =========================
+app = Flask('')
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-INTERVAL = "30"
-LIMIT = 200
+@app.route('/')
+def home():
+    return "Bot Online!"
 
-# =========================
-# TELEGRAM
-# =========================
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": msg
-    }
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# Pega as chaves que você vai cadastrar no painel do Render
+TOKEN = os.environ.get("TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+
+symbols = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT","DOGEUSDT",
+    "ATOMUSDT","APTUSDT","GALAUSDT","FILUSDT","ICPUSDT","LINKUSDT"
+]
+
+sent_alerts = {}
+
+# ==========================================
+# PARTE 2: O MIOLO (Suas Funções de Análise)
+# ==========================================
+
+def send(msg):
     try:
-        requests.post(url, data=data)
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     except:
-        print("Erro ao enviar Telegram")
+        pass
 
-# =========================
-# BYBIT DATA
-# =========================
 def get_data(symbol):
-    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={INTERVAL}&limit={LIMIT}"
-    r = requests.get(url).json()
-    data = r["result"]["list"]
+    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
+    data = requests.get(url).json()
+    df = pd.DataFrame(data['result']['list'])
+    df = df.iloc[::-1]
+    df.columns = ["time","open","high","low","close","volume","turnover"]
+    return df.astype(float)
 
-    df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume","turnover"
-    ])
-
-    df = df.astype(float)
-    df = df.sort_values("time")
-
+def supertrend(df, period=10, factor=2):
+    hl2 = (df['high'] + df['low']) / 2
+    atr = (df['high'] - df['low']).rolling(period).mean()
+    upper = hl2 + factor * atr
+    lower = hl2 - factor * atr
+    trend = [True]
+    st = [lower.iloc[0]]
+    for i in range(1, len(df)):
+        if df['close'].iloc[i] > st[i-1]:
+            trend.append(True)
+        elif df['close'].iloc[i] < st[i-1]:
+            trend.append(False)
+        else:
+            trend.append(trend[i-1])
+        st.append(lower.iloc[i] if trend[i] else upper.iloc[i])
+    df['st'], df['trend'] = st, trend
     return df
 
-# =========================
-# PST (simples)
-# =========================
-def calc_pst(df):
-    df["pst_high"] = df["high"].rolling(5).max()
-    df["pst_low"] = df["low"].rolling(5).min()
-    return df
+def calculate(df):
+    df['sma8'] = df['close'].rolling(8).mean()
+    df['sma21'] = df['close'].rolling(21).mean()
+    df['vol_ma'] = df['volume'].rolling(20).mean()
+    df['vol_forte'] = df['volume'] > df['vol_ma']
+    df['alta'], df['baixa'] = df['close'] > df['open'], df['close'] < df['open']
+    return supertrend(df)
 
-# =========================
-# LOOP
-# =========================
-print("BOT INICIADO...")
-
-while True:
-    for symbol in SYMBOLS:
-        try:
-            df = get_data(symbol)
-            df = calc_pst(df)
-
-            last = df.iloc[-1]
-
-            price = last["close"]
-            pst_high = last["pst_high"]
-            pst_low = last["pst_low"]
-
-            if price > pst_high:
-                send_telegram(f"🚀 BUY {symbol}\nPreço: {price}")
-
-            if price < pst_low:
-                send_telegram(f"🔻 SELL {symbol}\nPreço: {price}")
-
-            print(f"{symbol} ok")
-
-        except Exception as e:
-            print("Erro:", e)
-
-    time.sleep(60)
-    import time
-
-print("BOT INICIADO COM SUCESSO...")
-
-while True:
+def check(symbol, btc_up, btc_down):
     try:
-        print("Bot rodando 24h...")
+        df = calculate(get_data(symbol))
+        last, prev = df.iloc[-1], df.iloc[-2]
         
-        # CHAME SUA FUNÇÃO PRINCIPAL AQUI
-        # exemplo:
-        # run_strategy()
+        compra = (last['alta'] and prev['close'] <= prev['st'] and last['close'] > last['st'] and 
+                  last['close'] > last['sma8'] and last['vol_forte'] and btc_up)
+        
+        venda = (last['baixa'] and prev['close'] >= prev['st'] and last['close'] < last['st'] and 
+                 last['close'] < last['sma8'] and last['vol_forte'] and btc_down)
 
-        time.sleep(60)  # roda a cada 60 segundos
+        if compra and sent_alerts.get(symbol) != "buy":
+            send(f"🚀 COMPRA {symbol}")
+            sent_alerts[symbol] = "buy"
+        elif venda and sent_alerts.get(symbol) != "sell":
+            send(f"🔻 VENDA {symbol}")
+            sent_alerts[symbol] = "sell"
+    except:
+        pass
 
-    except Exception as e:
-        print("Erro:", e)
-        time.sleep(30)
+# ==========================================
+# PARTE 3: A BASE (O Loop de Execução)
+# ==========================================
+
+if __name__ == "__main__":
+    keep_alive() # Liga o servidor para o Render não dormir[cite: 1]
+    
+    while True:
+        try:
+            # Otimização: Checa o BTC uma vez por minuto[cite: 1]
+            df_btc = get_data("BTCUSDT")
+            df_btc['sma21'] = df_btc['close'].rolling(21).mean()
+            btc_up = df_btc.iloc[-1]['close'] > df_btc.iloc[-1]['sma21']
+            btc_down = df_btc.iloc[-1]['close'] < df_btc.iloc[-1]['sma21']
+
+            for s in symbols:
+                check(s, btc_up, btc_down)
+                time.sleep(1) # Pausa curta para não travar
+        except Exception as e:
+            print(f"Erro no loop: {e}")
+            
+        time.sleep(60) # Espera 1 minuto para a próxima rodada
