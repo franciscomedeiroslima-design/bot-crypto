@@ -13,16 +13,18 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot Online!"
+    return "Bot Online e Estabilizado!"
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    # AJUSTE CRÍTICO: Pega a porta automática do Render para evitar reinicializações
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# Pega as chaves que você cadastrou no painel do Render
+# Configurações de ambiente
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
@@ -40,19 +42,23 @@ sent_alerts = {}
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        # Ajuste para descobrir o erro: agora o bot imprime a resposta do Telegram no Log
+        # Imprime a resposta para debug nos logs do Render
         response = requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
         print(f"Resposta do Telegram: {response.json()}") 
     except Exception as e:
-        print(f"Erro ao enviar: {e}")
+        print(f"Erro ao enviar mensagem: {e}")
 
 def get_data(symbol):
-    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data['result']['list'])
-    df = df.iloc[::-1]
-    df.columns = ["time","open","high","low","close","volume","turnover"]
-    return df.astype(float)
+    try:
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
+        data = requests.get(url).json()
+        df = pd.DataFrame(data['result']['list'])
+        df = df.iloc[::-1]
+        df.columns = ["time","open","high","low","close","volume","turnover"]
+        return df.astype(float)
+    except Exception as e:
+        print(f"Erro ao buscar dados de {symbol}: {e}")
+        return None
 
 def supertrend(df, period=10, factor=2):
     hl2 = (df['high'] + df['low']) / 2
@@ -82,7 +88,10 @@ def calculate(df):
 
 def check(symbol, btc_up, btc_down):
     try:
-        df = calculate(get_data(symbol))
+        df_raw = get_data(symbol)
+        if df_raw is None: return
+        
+        df = calculate(df_raw)
         last, prev = df.iloc[-1], df.iloc[-2]
         
         compra = (last['alta'] and prev['close'] <= prev['st'] and last['close'] > last['st'] and 
@@ -97,33 +106,40 @@ def check(symbol, btc_up, btc_down):
         elif venda and sent_alerts.get(symbol) != "sell":
             send(f"🔻 VENDA {symbol}")
             sent_alerts[symbol] = "sell"
-    except:
-        pass
+    except Exception as e:
+        print(f"Erro no check de {symbol}: {e}")
 
 # ==========================================
 # PARTE 3: A BASE (O Loop de Execução)
 # ==========================================
 
 if __name__ == "__main__":
-    # 1. Liga o servidor para o Render não dormir
-    keep_alive() 
+    # 1. Inicia o servidor Flask para o Render
+    keep_alive()
     
-    # 2. Envia uma mensagem de teste para conferir se TOKEN e CHAT_ID funcionam
-    send("🤖 Bot iniciado com sucesso no Render!")
+    # 2. Aguarda o Render estabilizar a rede
+    print("Aguardando estabilização do Render...")
+    time.sleep(10)
     
-    # 3. Inicia o monitoramento do mercado
+    # 3. Mensagem de confirmação
+    send("🤖 Bot estabilizado e monitorando o mercado!")
+    
     while True:
         try:
-            # Otimização: Checa o BTC uma vez por minuto
-            df_btc = get_data("BTCUSDT")
-            df_btc['sma21'] = df_btc['close'].rolling(21).mean()
-            btc_up = df_btc.iloc[-1]['close'] > df_btc.iloc[-1]['sma21']
-            btc_down = df_btc.iloc[-1]['close'] < df_btc.iloc[-1]['sma21']
+            # Checa tendência do Bitcoin
+            df_btc_raw = get_data("BTCUSDT")
+            if df_btc_raw is not None:
+                df_btc = df_btc_raw
+                df_btc['sma21'] = df_btc['close'].rolling(21).mean()
+                btc_up = df_btc.iloc[-1]['close'] > df_btc.iloc[-1]['sma21']
+                btc_down = df_btc.iloc[-1]['close'] < df_btc.iloc[-1]['sma21']
 
-            for s in symbols:
-                check(s, btc_up, btc_down)
-                time.sleep(1) # Pausa curta para não travar
-        except Exception as e:
-            print(f"Erro no loop: {e}")
+                for s in symbols:
+                    check(s, btc_up, btc_down)
+                    time.sleep(1) 
             
-        time.sleep(60) # Espera 1 minuto para a próxima rodada
+            print("Ciclo concluído com sucesso.")
+        except Exception as e:
+            print(f"Erro no loop principal: {e}")
+            
+        time.sleep(60) # Espera 1 minuto para o próximo ciclo
