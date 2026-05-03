@@ -103,19 +103,16 @@ def check(symbol, btc_up, btc_down):
 # ==========================================
 
 if __name__ == "__main__":
-    keep_alive() # Liga o servidor para o Render não dormir[cite: 1]
-    def send(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        response = requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
-        # Isso vai mostrar no Log se o Telegram aceitou ou recusou a mensagem
-        print(f"Resposta do Telegram: {response.json()}") 
-    except Exception as e:
-        print(f"Erro ao tentar enviar: {e}")
+    # 1. Liga o servidor para o Render não dormir
+    keep_alive()[cite: 1]
     
+    # 2. Envia uma mensagem de teste para confirmar que o TOKEN/ID estão certos
+    send("🤖 Bot iniciado com sucesso no Render!")[cite: 1]
+    
+    # 3. Inicia o monitoramento do mercado
     while True:
         try:
-            # Otimização: Checa o BTC uma vez por minuto[cite: 1]
+            # Otimização: Checa o BTC uma vez por minuto
             df_btc = get_data("BTCUSDT")
             df_btc['sma21'] = df_btc['close'].rolling(21).mean()
             btc_up = df_btc.iloc[-1]['close'] > df_btc.iloc[-1]['sma21']
@@ -124,6 +121,7 @@ if __name__ == "__main__":
             for s in symbols:
                 check(s, btc_up, btc_down)
                 time.sleep(1) # Pausa curta para não travar
+                
         except Exception as e:
             print(f"Erro no loop: {e}")
             
