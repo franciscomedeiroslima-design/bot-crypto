@@ -104,7 +104,7 @@ def check(symbol, btc_up, btc_down):
 
 if __name__ == "__main__":
     keep_alive() # Liga o servidor para o Render não dormir[cite: 1]
-
+send("Estou vivo e configurado corretamente!")
     # ADICIONE ESTA LINHA PARA TESTAR ASSIM QUE LIGAR:
     send("🤖 Bot iniciado com sucesso no Render!")
     
