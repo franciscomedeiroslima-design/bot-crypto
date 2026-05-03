@@ -105,10 +105,9 @@ def check(symbol, btc_up, btc_down):
 if __name__ == "__main__":
     # 1. Liga o servidor para o Render não dormir
     keep_alive()[cite: 1]
-    
+
     # 2. Envia uma mensagem de teste para confirmar que o TOKEN/ID estão certos
     send("🤖 Bot iniciado com sucesso no Render!")[cite: 1]
-    
     # 3. Inicia o monitoramento do mercado
     while True:
         try:
