@@ -5,8 +5,7 @@ import pandas as pd
 # =========================
 # CONFIG
 # =========================
-TOKEN = 8582837299:AAHmZ4KOoEGem6PNOLNTYxPpWShixxDSDZg
-CHAT_ID = 8722379778
+
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 INTERVAL = "30"
 LIMIT = 200
