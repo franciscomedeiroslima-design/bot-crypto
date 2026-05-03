@@ -104,9 +104,14 @@ def check(symbol, btc_up, btc_down):
 
 if __name__ == "__main__":
     keep_alive() # Liga o servidor para o Render não dormir[cite: 1]
-    send("Estou vivo e configurado corretamente!")
-    # ADICIONE ESTA LINHA PARA TESTAR ASSIM QUE LIGAR:
-    send("🤖 Bot iniciado com sucesso no Render!")
+    def send(msg):
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        response = requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+        # Isso vai mostrar no Log se o Telegram aceitou ou recusou a mensagem
+        print(f"Resposta do Telegram: {response.json()}") 
+    except Exception as e:
+        print(f"Erro ao tentar enviar: {e}")
     
     while True:
         try:
