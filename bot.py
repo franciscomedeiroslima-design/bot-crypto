@@ -105,14 +105,16 @@ def check(symbol, btc_up, btc_down):
 # ==========================================
 
 if __name__ == "__main__":
-    keep_alive() # Liga o servidor para o Render não dormir
+    # 1. Liga o servidor para o Render não dormir
+    keep_alive() 
     
-    # Mensagem de teste para conferir se TOKEN e CHAT_ID funcionam
+    # 2. Envia uma mensagem de teste para conferir se TOKEN e CHAT_ID funcionam
     send("🤖 Bot iniciado com sucesso no Render!")
     
+    # 3. Inicia o monitoramento do mercado
     while True:
         try:
-            # Otimização: Checa o BTC uma vez por minuto[cite: 1]
+            # Otimização: Checa o BTC uma vez por minuto
             df_btc = get_data("BTCUSDT")
             df_btc['sma21'] = df_btc['close'].rolling(21).mean()
             btc_up = df_btc.iloc[-1]['close'] > df_btc.iloc[-1]['sma21']
