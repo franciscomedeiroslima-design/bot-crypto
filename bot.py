@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 import numpy as np
 import time
+from datetime import datetime
 
 app = Flask('')
 
@@ -16,7 +17,6 @@ def home():
     return "Bot Online e Estabilizado!"
 
 def run():
-    # AJUSTE CRÍTICO: Pega a porta automática do Render para evitar reinicializações
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -34,6 +34,7 @@ symbols = [
 ]
 
 sent_alerts = {}
+last_heartbeat = 0  # Marcador para a mensagem de vida
 
 # ==========================================
 # PARTE 2: O MIOLO (Funções de Análise)
@@ -42,7 +43,6 @@ sent_alerts = {}
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        # Imprime a resposta para debug nos logs do Render
         response = requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
         print(f"Resposta do Telegram: {response.json()}") 
     except Exception as e:
@@ -114,19 +114,23 @@ def check(symbol, btc_up, btc_down):
 # ==========================================
 
 if __name__ == "__main__":
-    # 1. Inicia o servidor Flask para o Render
     keep_alive()
-    
-    # 2. Aguarda o Render estabilizar a rede
     print("Aguardando estabilização do Render...")
     time.sleep(10)
     
-    # 3. Mensagem de confirmação
     send("🤖 Bot estabilizado e monitorando o mercado!")
-    
+    last_heartbeat = time.time() # Começa a contar o tempo agora
+
     while True:
         try:
-            # Checa tendência do Bitcoin
+            # 1. Checa se já passou 1 hora para avisar que está vivo
+            tempo_atual = time.time()
+            if tempo_atual - last_heartbeat >= 3600: # 3600 segundos = 1 hora
+                hora_formatada = datetime.now().strftime("%H:%M")
+                send(f"✅ Status {hora_formatada}: O bot segue monitorando {len(symbols)} moedas.")
+                last_heartbeat = tempo_atual
+
+            # 2. Monitoramento de mercado
             df_btc_raw = get_data("BTCUSDT")
             if df_btc_raw is not None:
                 df_btc = df_btc_raw
@@ -142,4 +146,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Erro no loop principal: {e}")
             
-        time.sleep(60) # Espera 1 minuto para o próximo ciclo
+        time.sleep(60)
