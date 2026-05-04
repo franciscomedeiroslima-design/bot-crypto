@@ -7,33 +7,35 @@ from flask import Flask
 from threading import Thread
 import pytz
 
-# =========================
-# FUSO HORÁRIO (SC)
-# =========================
-timezone = pytz.timezone("America/Sao_Paulo")
-
-# =========================
-# KEEP ALIVE (Render)
-# =========================
+# ============ SERVIDOR PARA RENDER ============
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot rodando 24h 🚀"
+    return "Bot Estratégia DOC Online!"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    Thread(target=run).start()
+    t = Thread(target=run)
+    t.start()
 
-# =========================
-# TELEGRAM
-# =========================
+# ============ CONFIG ============
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
+timezone = pytz.timezone("America/Sao_Paulo")  # Santa Catarina usa esse fuso
+
+symbols = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT","DOGEUSDT",
+    "ATOMUSDT","APTUSDT","GALAUSDT","FILUSDT","ICPUSDT","LINKUSDT"
+]
+
+sent_alerts = {}
+
+# ============ TELEGRAM ============
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -41,20 +43,7 @@ def send(msg):
     except Exception as e:
         print(f"Erro Telegram: {e}")
 
-# =========================
-# PARES
-# =========================
-symbols = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT","DOGEUSDT",
-    "ATOMUSDT","APTUSDT","GALAUSDT","FILUSDT","ICPUSDT","LINKUSDT"
-]
-
-sent_alerts = {}
-last_heartbeat = 0
-
-# =========================
-# DADOS
-# =========================
+# ============ DADOS ============
 def get_data(symbol):
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
@@ -66,12 +55,11 @@ def get_data(symbol):
     except:
         return None
 
-# =========================
-# SUPER TREND
-# =========================
+# ============ SUPERTREND ============
 def supertrend(df, period=10, factor=2):
     hl2 = (df['high'] + df['low']) / 2
     atr = (df['high'] - df['low']).rolling(period).mean()
+
     upper = hl2 + factor * atr
     lower = hl2 - factor * atr
 
@@ -93,18 +81,16 @@ def supertrend(df, period=10, factor=2):
 
     return df
 
-# =========================
-# CALCULO (SEM VOLUME)
-# =========================
+# ============ CÁLCULOS ============
 def calculate(df):
     df['sma_branca'] = df['close'].rolling(8).mean()
     df['sma_amarela'] = df['close'].rolling(21).mean()
 
+    df['branca_subindo'] = df['sma_branca'] > df['sma_branca'].shift(1)
+
     return supertrend(df)
 
-# =========================
-# VERIFICAR SINAIS (REVERSÃO)
-# =========================
+# ============ LÓGICA ============
 def check(symbol, btc_up, btc_down):
     try:
         df_raw = get_data(symbol)
@@ -116,58 +102,45 @@ def check(symbol, btc_up, btc_down):
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
-        agora = datetime.now(timezone).strftime("%H:%M")
-
-        # COMPRA
+        # ===== COMPRA (igual imagem) =====
         compra = (
-            prev['trend'] == False and
-            last['trend'] == True and
-            last['close'] > last['open'] and
+            prev['trend'] == True and
+            prev['close'] > prev['st'] and
             last['close'] > last['sma_branca'] and
+            last['sma_branca'] > last['sma_amarela'] and
+            last['branca_subindo'] and
             btc_up
         )
 
-        # VENDA
+        # ===== VENDA =====
         venda = (
-            prev['trend'] == True and
-            last['trend'] == False and
-            last['close'] < last['open'] and
+            prev['trend'] == False and
+            prev['close'] < prev['st'] and
             last['close'] < last['sma_branca'] and
+            last['sma_branca'] < last['sma_amarela'] and
+            not last['branca_subindo'] and
             btc_down
         )
 
+        agora = datetime.now(timezone).strftime("%H:%M")
+
         if compra and sent_alerts.get(symbol) != "buy":
-            send(
-                f"🚀 BUY IMEDIATO: {symbol}\n"
-                f"⏰ {agora} (SC)\n"
-                f"🔥 Reversão detectada\n"
-                f"📈 Médias a favor"
-            )
+            send(f"🚀 COMPRA {symbol}\n🕒 {agora} (SC)\n📈 Rompimento + Alinhamento confirmado")
             sent_alerts[symbol] = "buy"
 
         elif venda and sent_alerts.get(symbol) != "sell":
-            send(
-                f"🔻 SELL IMEDIATO: {symbol}\n"
-                f"⏰ {agora} (SC)\n"
-                f"🔥 Reversão detectada\n"
-                f"📉 Médias a favor"
-            )
+            send(f"🔻 VENDA {symbol}\n🕒 {agora} (SC)\n📉 Rompimento + Alinhamento confirmado")
             sent_alerts[symbol] = "sell"
 
     except Exception as e:
-        print(f"Erro no check {symbol}: {e}")
+        print(f"Erro no check de {symbol}: {e}")
 
-# =========================
-# LOOP PRINCIPAL
-# =========================
+# ============ LOOP ============
 if __name__ == "__main__":
     keep_alive()
     time.sleep(10)
 
-    agora = datetime.now(timezone).strftime("%H:%M")
-    send(f"🤖 Bot iniciado às {agora} (SC)\nMonitorando mercado...")
-
-    last_heartbeat = time.time()
+    send("🤖 Bot iniciado e monitorando mercado (SC)")
 
     while True:
         try:
@@ -182,12 +155,6 @@ if __name__ == "__main__":
                 for s in symbols:
                     check(s, btc_up, btc_down)
                     time.sleep(1)
-
-            # STATUS A CADA 1H
-            if time.time() - last_heartbeat >= 3600:
-                agora = datetime.now(timezone).strftime("%H:%M")
-                send(f"✅ STATUS {agora} (SC): Bot ativo.")
-                last_heartbeat = time.time()
 
         except Exception as e:
             print(f"Erro geral: {e}")
