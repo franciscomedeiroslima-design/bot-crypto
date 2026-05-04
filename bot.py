@@ -7,12 +7,12 @@ from flask import Flask
 from threading import Thread
 import pytz
 
-# ============ SERVIDOR PARA RENDER ============
+# ================= SERVER =================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot Estratégia DOC Online!"
+    return "Bot rodando 24h 🚀"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
@@ -22,11 +22,16 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# ============ CONFIG ============
+# ================= CONFIG =================
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-timezone = pytz.timezone("America/Sao_Paulo")  # Santa Catarina usa esse fuso
+if not TOKEN or not CHAT_ID:
+    print("❌ ERRO: TOKEN ou CHAT_ID não definidos!")
+else:
+    print("✅ Telegram configurado")
+
+timezone = pytz.timezone("America/Sao_Paulo")
 
 symbols = [
     "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT","DOGEUSDT",
@@ -35,27 +40,39 @@ symbols = [
 
 sent_alerts = {}
 
-# ============ TELEGRAM ============
+# ================= TELEGRAM =================
 def send(msg):
+    if not TOKEN or not CHAT_ID:
+        print("⚠️ Mensagem não enviada (TOKEN/CHAT_ID ausente)")
+        return
+
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
         print(f"Erro Telegram: {e}")
 
-# ============ DADOS ============
+# ================= DADOS =================
 def get_data(symbol):
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-        data = requests.get(url).json()
-        df = pd.DataFrame(data['result']['list'])
+        res = requests.get(url, timeout=10).json()
+
+        if "result" not in res or "list" not in res["result"]:
+            print(f"Erro dados {symbol}")
+            return None
+
+        df = pd.DataFrame(res['result']['list'])
         df = df.iloc[::-1]
+
         df.columns = ["time","open","high","low","close","volume","turnover"]
         return df.astype(float)
-    except:
+
+    except Exception as e:
+        print(f"Erro get_data {symbol}: {e}")
         return None
 
-# ============ SUPERTREND ============
+# ================= SUPERTREND =================
 def supertrend(df, period=10, factor=2):
     hl2 = (df['high'] + df['low']) / 2
     atr = (df['high'] - df['low']).rolling(period).mean()
@@ -81,7 +98,7 @@ def supertrend(df, period=10, factor=2):
 
     return df
 
-# ============ CÁLCULOS ============
+# ================= CALCULO =================
 def calculate(df):
     df['sma_branca'] = df['close'].rolling(8).mean()
     df['sma_amarela'] = df['close'].rolling(21).mean()
@@ -90,7 +107,7 @@ def calculate(df):
 
     return supertrend(df)
 
-# ============ LÓGICA ============
+# ================= LÓGICA =================
 def check(symbol, btc_up, btc_down):
     try:
         df_raw = get_data(symbol)
@@ -99,10 +116,12 @@ def check(symbol, btc_up, btc_down):
 
         df = calculate(df_raw)
 
+        if len(df) < 30:
+            return
+
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # ===== COMPRA (igual imagem) =====
         compra = (
             prev['trend'] == True and
             prev['close'] > prev['st'] and
@@ -112,7 +131,6 @@ def check(symbol, btc_up, btc_down):
             btc_up
         )
 
-        # ===== VENDA =====
         venda = (
             prev['trend'] == False and
             prev['close'] < prev['st'] and
@@ -125,22 +143,24 @@ def check(symbol, btc_up, btc_down):
         agora = datetime.now(timezone).strftime("%H:%M")
 
         if compra and sent_alerts.get(symbol) != "buy":
-            send(f"🚀 COMPRA {symbol}\n🕒 {agora} (SC)\n📈 Rompimento + Alinhamento confirmado")
+            send(f"🚀 COMPRA {symbol}\n🕒 {agora}\n📈 Tendência confirmada")
             sent_alerts[symbol] = "buy"
+            print(f"COMPRA {symbol}")
 
         elif venda and sent_alerts.get(symbol) != "sell":
-            send(f"🔻 VENDA {symbol}\n🕒 {agora} (SC)\n📉 Rompimento + Alinhamento confirmado")
+            send(f"🔻 VENDA {symbol}\n🕒 {agora}\n📉 Tendência confirmada")
             sent_alerts[symbol] = "sell"
+            print(f"VENDA {symbol}")
 
     except Exception as e:
-        print(f"Erro no check de {symbol}: {e}")
+        print(f"Erro no check {symbol}: {e}")
 
-# ============ LOOP ============
+# ================= LOOP =================
 if __name__ == "__main__":
     keep_alive()
-    time.sleep(10)
+    time.sleep(5)
 
-    send("🤖 Bot iniciado e monitorando mercado (SC)")
+    send("🤖 Bot iniciado com sucesso (SC)")
 
     while True:
         try:
