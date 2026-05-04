@@ -15,7 +15,7 @@ def home():
 
 def run():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, threaded=True)
 
 def keep_alive():
     t = Thread(target=run)
@@ -27,6 +27,9 @@ def keep_alive():
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
+if not TOKEN or not CHAT_ID:
+    raise ValueError("TOKEN ou CHAT_ID não definidos!")
+
 timezone = ZoneInfo("America/Sao_Paulo")
 
 symbols = [
@@ -37,7 +40,6 @@ symbols = [
 sent_alerts = {}
 last_heartbeat = time.time()
 
-# controle de erro (evita spam)
 api_error_sent = False
 bot_error_sent = False
 
@@ -55,7 +57,7 @@ def send(msg):
         print(f"Erro Telegram: {e}")
 
 # =========================
-# DADOS (COM ALERTA DE API)
+# DADOS
 # =========================
 def get_data(symbol):
     global api_error_sent
@@ -64,13 +66,19 @@ def get_data(symbol):
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
         data = requests.get(url, timeout=10).json()
 
+        if 'result' not in data or 'list' not in data['result']:
+            raise Exception("Resposta inválida da API")
+
         df = pd.DataFrame(data['result']['list'])
+
+        if df.empty:
+            raise Exception("DataFrame vazio")
+
         df = df.iloc[::-1]
         df.columns = ["time","open","high","low","close","volume","turnover"]
 
-        # reset erro se voltou ao normal
         if api_error_sent:
-            send("✅ API restabelecida com sucesso")
+            send("✅ API restabelecida")
             api_error_sent = False
 
         return df.astype(float)
@@ -123,12 +131,12 @@ def calculate(df):
     return supertrend(df)
 
 # =========================
-# SINAIS (SEM BTC)
+# SINAIS
 # =========================
 def check(symbol):
     try:
         df_raw = get_data(symbol)
-        if df_raw is None:
+        if df_raw is None or len(df_raw) < 30:
             return
 
         df = calculate(df_raw)
@@ -153,24 +161,24 @@ def check(symbol):
         )
 
         if compra and sent_alerts.get(symbol) != "buy":
-            send(f"🚀 SINAL DE COMPRA: {symbol}\n📈 Rompimento + Médias alinhadas")
+            send(f"🚀 COMPRA: {symbol}\n📈 Rompimento + tendência")
             sent_alerts[symbol] = "buy"
 
         elif venda and sent_alerts.get(symbol) != "sell":
-            send(f"🔻 SINAL DE VENDA: {symbol}\n📉 Rompimento + Médias alinhadas")
+            send(f"🔻 VENDA: {symbol}\n📉 Rompimento + tendência")
             sent_alerts[symbol] = "sell"
 
     except Exception as e:
         print(f"Erro no check de {symbol}: {e}")
 
 # =========================
-# LOOP PRINCIPAL
+# MAIN
 # =========================
 if __name__ == "__main__":
     keep_alive()
     time.sleep(10)
 
-    send("🤖 Bot iniciado e monitorando o mercado")
+    send("🤖 Bot iniciado com sucesso")
 
     while True:
         try:
@@ -178,17 +186,20 @@ if __name__ == "__main__":
                 check(s)
                 time.sleep(1)
 
-            # HEARTBEAT A CADA 4H
+            # STATUS A CADA 4H
             if time.time() - last_heartbeat >= 14400:
                 send("📡 Monitoramento ativo")
                 last_heartbeat = time.time()
 
+            # reset erro se tudo ok
+            if bot_error_sent:
+                bot_error_sent = False
+
         except Exception as e:
             print(f"Erro geral: {e}")
 
-            global bot_error_sent
             if not bot_error_sent:
-                send("🚨 ERRO CRÍTICO: Bot apresentou falha inesperada")
+                send("🚨 ERRO CRÍTICO: Bot falhou")
                 bot_error_sent = True
 
         time.sleep(60)
