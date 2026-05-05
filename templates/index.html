@@ -8,7 +8,7 @@ from flask import Flask, jsonify
 from threading import Thread
 
 # =========================
-# FLASK
+# FLASK (PAINEL)
 # =========================
 app = Flask(__name__)
 
@@ -19,7 +19,7 @@ def home():
     return "Bot DOC Online 🚀"
 
 @app.route('/api/signals')
-def get_signals():
+def dashboard():
     return jsonify(signals[-50:])
 
 def run():
@@ -46,7 +46,7 @@ symbols = [
 sent_alerts = {}
 last_heartbeat = time.time()
 
-# flags de erro
+# controle de erro
 api_error_sent = False
 bot_error_sent = False
 
@@ -65,18 +65,34 @@ def send(msg):
         print("Erro Telegram:", e)
 
 # =========================
-# DADOS
+# DADOS (COM RETRY + VALIDAÇÃO)
 # =========================
-def get_data(symbol):
-    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-    response = requests.get(url, timeout=10)
-    data = response.json()
+def get_data(symbol, retries=3):
+    for attempt in range(retries):
+        try:
+            url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
+            response = requests.get(url, timeout=10)
 
-    df = pd.DataFrame(data['result']['list'])
-    df = df.iloc[::-1]
-    df.columns = ["time","open","high","low","close","volume","turnover"]
+            if response.status_code != 200:
+                raise Exception(f"Erro API {symbol}")
 
-    return df.astype(float)
+            data = response.json()
+
+            if 'result' not in data or 'list' not in data['result']:
+                raise Exception(f"Resposta inválida da API ({symbol})")
+
+            df = pd.DataFrame(data['result']['list'])
+            df = df.iloc[::-1]
+            df.columns = ["time","open","high","low","close","volume","turnover"]
+
+            return df.astype(float)
+
+        except Exception as e:
+            print(f"Tentativa {attempt+1} falhou ({symbol}):", e)
+            time.sleep(2)
+
+    # se falhar tudo
+    raise Exception(f"Falha total API ({symbol})")
 
 # =========================
 # SUPERTREND
@@ -117,11 +133,14 @@ def calculate(df):
     return supertrend(df)
 
 # =========================
-# SNIPER BIDIRECIONAL
+# SNIPER (BIDIRECIONAL)
 # =========================
 def check(symbol):
     df_raw = get_data(symbol)
     df = calculate(df_raw)
+
+    if len(df) < 30:
+        return
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
@@ -144,62 +163,53 @@ def check(symbol):
 
     if compra and sent_alerts.get(symbol) != "buy":
         send(f"🚀 COMPRA SNIPER: {symbol}")
-
-        signals.append({
-            "symbol": symbol,
-            "type": "COMPRA",
-            "time": agora
-        })
-
+        signals.append({"symbol": symbol, "type": "COMPRA", "time": agora})
         sent_alerts[symbol] = "buy"
 
     elif venda and sent_alerts.get(symbol) != "sell":
         send(f"🔻 VENDA SNIPER: {symbol}")
-
-        signals.append({
-            "symbol": symbol,
-            "type": "VENDA",
-            "time": agora
-        })
-
+        signals.append({"symbol": symbol, "type": "VENDA", "time": agora})
         sent_alerts[symbol] = "sell"
 
 # =========================
-# LOOP
+# LOOP PRINCIPAL
 # =========================
 if __name__ == "__main__":
     keep_alive()
-    time.sleep(10)
+    time.sleep(5)
 
     send("🤖 Bot iniciado com sucesso")
 
     while True:
+        erro_ocorreu = False
+
         try:
             for s in symbols:
                 check(s)
                 time.sleep(1)
 
-            # STATUS 4H
-            if time.time() - last_heartbeat >= 14400:
-                send("📡 Monitoramento ativo")
-                last_heartbeat = time.time()
+        except Exception as e:
+            erro_ocorreu = True
+            print("Erro geral:", e)
 
-            # reset erro se rodou normal
+            if not api_error_sent:
+                send("🚨 Falha na API")
+                api_error_sent = True
+
+            if not bot_error_sent:
+                send("🚨 Erro no bot")
+                bot_error_sent = True
+
+        # RESET INTELIGENTE
+        if not erro_ocorreu:
+            if api_error_sent:
+                send("✅ API normalizada")
             api_error_sent = False
             bot_error_sent = False
 
-        except Exception as e:
-            print("Erro geral:", e)
-
-            erro = str(e).lower()
-
-            if "api" in erro or "bybit" in erro:
-                if not api_error_sent:
-                    send("🚨 ERRO: Falha na API")
-                    api_error_sent = True
-            else:
-                if not bot_error_sent:
-                    send("🚨 ERRO CRÍTICO NO BOT")
-                    bot_error_sent = True
+        # HEARTBEAT 4H
+        if time.time() - last_heartbeat >= 14400:
+            send("📡 Monitoramento ativo")
+            last_heartbeat = time.time()
 
         time.sleep(60)
