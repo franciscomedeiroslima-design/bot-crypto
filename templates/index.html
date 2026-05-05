@@ -1,1 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Painel PRO</title>
+  <script src="https://s3.tradingview.com/tv.js"></script>
+</head>
 
+<body style="background:#0f172a;color:white;font-family:Arial">
+
+<h2>📊 Painel PRO</h2>
+
+<div id="chart" style="height:400px;"></div>
+
+<h3>📡 Sinais em tempo real</h3>
+<div id="signals"></div>
+
+<script>
+new TradingView.widget({
+  "container_id": "chart",
+  "symbol": "BYBIT:BTCUSDT",
+  "interval": "30",
+  "theme": "dark",
+  "style": "1",
+  "locale": "br",
+  "height": 400
+});
+
+async function loadSignals(){
+  let res = await fetch('/signals');
+  let data = await res.json();
+
+  let html = "";
+
+  data.signals.reverse().forEach(s => {
+    html += `<p>⚡ ${s.type} - ${s.symbol} (${s.time})</p>`;
+  });
+
+  document.getElementById("signals").innerHTML = html;
+}
+
+setInterval(loadSignals, 3000);
+</script>
+
+</body>
+</html>
