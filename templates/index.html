@@ -8,7 +8,7 @@ from flask import Flask, jsonify
 from threading import Thread
 
 # =========================
-# FLASK (PAINEL)
+# FLASK
 # =========================
 app = Flask(__name__)
 
@@ -16,7 +16,7 @@ signals = []
 
 @app.route('/')
 def home():
-    return "Bot DOC Online 🚀"
+    return "Bot Online 🚀"
 
 @app.route('/api/signals')
 def dashboard():
@@ -46,7 +46,7 @@ symbols = [
 sent_alerts = {}
 last_heartbeat = time.time()
 
-# controle de erro
+# FLAGS DE CONTROLE
 api_error_sent = False
 bot_error_sent = False
 
@@ -60,39 +60,30 @@ def send(msg):
 
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.get(url, params={"chat_id": CHAT_ID, "text": msg_final}, timeout=10)
-
     except Exception as e:
         print("Erro Telegram:", e)
 
 # =========================
-# DADOS (COM RETRY + VALIDAÇÃO)
+# API BYBIT
 # =========================
-def get_data(symbol, retries=3):
-    for attempt in range(retries):
-        try:
-            url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-            response = requests.get(url, timeout=10)
+def get_data(symbol):
+    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
 
-            if response.status_code != 200:
-                raise Exception(f"Erro API {symbol}")
+    response = requests.get(url, timeout=10)
 
-            data = response.json()
+    if response.status_code != 200:
+        raise Exception("Erro API")
 
-            if 'result' not in data or 'list' not in data['result']:
-                raise Exception(f"Resposta inválida da API ({symbol})")
+    data = response.json()
 
-            df = pd.DataFrame(data['result']['list'])
-            df = df.iloc[::-1]
-            df.columns = ["time","open","high","low","close","volume","turnover"]
+    if 'result' not in data or 'list' not in data['result']:
+        raise Exception("Resposta inválida")
 
-            return df.astype(float)
+    df = pd.DataFrame(data['result']['list'])
+    df = df.iloc[::-1]
+    df.columns = ["time","open","high","low","close","volume","turnover"]
 
-        except Exception as e:
-            print(f"Tentativa {attempt+1} falhou ({symbol}):", e)
-            time.sleep(2)
-
-    # se falhar tudo
-    raise Exception(f"Falha total API ({symbol})")
+    return df.astype(float)
 
 # =========================
 # SUPERTREND
@@ -133,11 +124,10 @@ def calculate(df):
     return supertrend(df)
 
 # =========================
-# SNIPER (BIDIRECIONAL)
+# ESTRATÉGIA
 # =========================
 def check(symbol):
-    df_raw = get_data(symbol)
-    df = calculate(df_raw)
+    df = calculate(get_data(symbol))
 
     if len(df) < 30:
         return
@@ -172,7 +162,7 @@ def check(symbol):
         sent_alerts[symbol] = "sell"
 
 # =========================
-# LOOP PRINCIPAL
+# LOOP
 # =========================
 if __name__ == "__main__":
     keep_alive()
@@ -190,7 +180,7 @@ if __name__ == "__main__":
 
         except Exception as e:
             erro_ocorreu = True
-            print("Erro geral:", e)
+            print("Erro:", e)
 
             if not api_error_sent:
                 send("🚨 Falha na API")
@@ -200,14 +190,12 @@ if __name__ == "__main__":
                 send("🚨 Erro no bot")
                 bot_error_sent = True
 
-        # RESET INTELIGENTE
         if not erro_ocorreu:
             if api_error_sent:
                 send("✅ API normalizada")
             api_error_sent = False
             bot_error_sent = False
 
-        # HEARTBEAT 4H
         if time.time() - last_heartbeat >= 14400:
             send("📡 Monitoramento ativo")
             last_heartbeat = time.time()
