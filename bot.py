@@ -4,24 +4,10 @@ import pandas as pd
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from flask import Flask
+from flask import Flask, jsonify
 from threading import Thread
 
-# =========================
-# SERVIDOR (Render)
-# =========================
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot SNIPER BIDIRECIONAL 🚀"
-
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    Thread(target=run).start()
+app = Flask(__name__)
 
 # =========================
 # CONFIG
@@ -32,11 +18,13 @@ CHAT_ID = os.environ.get("CHAT_ID")
 timezone = ZoneInfo("America/Sao_Paulo")
 
 symbols = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT",
-    "DOGEUSDT","ATOMUSDT","APTUSDT","GALAUSDT","FILUSDT"
+    "BTCUSDT","ETHUSDT","SOLUSDT","AVAXUSDT","DOGEUSDT",
+    "ATOMUSDT","APTUSDT","GALAUSDT","FILUSDT"
 ]
 
 sent_alerts = {}
+signals = []
+history = []
 
 # =========================
 # TELEGRAM
@@ -44,12 +32,12 @@ sent_alerts = {}
 def send(msg):
     try:
         hora = datetime.now(timezone).strftime("%H:%M")
-        msg_final = f"{msg}\n🕒 {hora} (SC)"
+        msg_final = f"{msg}\n🕒 {hora}"
 
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.get(url, params={"chat_id": CHAT_ID, "text": msg_final}, timeout=10)
-    except Exception as e:
-        print("Erro Telegram:", e)
+    except:
+        pass
 
 # =========================
 # DADOS
@@ -65,48 +53,32 @@ def get_data(symbol):
 
         return df.astype(float)
 
-    except Exception as e:
-        print("Erro API:", e)
+    except:
         return None
-
-# =========================
-# SUPERTREND
-# =========================
-def supertrend(df, period=10, factor=2):
-    hl2 = (df['high'] + df['low']) / 2
-    atr = (df['high'] - df['low']).rolling(period).mean()
-
-    upper = hl2 + factor * atr
-    lower = hl2 - factor * atr
-
-    trend = [True]
-    st = [lower.iloc[0]]
-
-    for i in range(1, len(df)):
-        if df['close'].iloc[i] > st[i-1]:
-            trend.append(True)
-        elif df['close'].iloc[i] < st[i-1]:
-            trend.append(False)
-        else:
-            trend.append(trend[i-1])
-
-        st.append(lower.iloc[i] if trend[i] else upper.iloc[i])
-
-    df['st'] = st
-    df['trend'] = trend
-
-    return df
 
 # =========================
 # INDICADORES
 # =========================
 def calculate(df):
-    df['sma_branca'] = df['close'].rolling(8).mean()
-    df['sma_amarela'] = df['close'].rolling(21).mean()
-    return supertrend(df)
+    df['sma8'] = df['close'].rolling(8).mean()
+    df['sma21'] = df['close'].rolling(21).mean()
+    return df
 
 # =========================
-# LÓGICA SNIPER + CONFIRMAÇÃO
+# FILTRO LATERAL
+# =========================
+def is_lateral(df):
+    diff = abs(df.iloc[-1]['sma8'] - df.iloc[-1]['sma21'])
+    return diff < (df.iloc[-1]['close'] * 0.002)
+
+# =========================
+# FORÇA (RANKING)
+# =========================
+def strength(df):
+    return abs(df.iloc[-1]['sma8'] - df.iloc[-1]['sma21'])
+
+# =========================
+# CHECK
 # =========================
 def check(symbol):
     df = get_data(symbol)
@@ -118,83 +90,140 @@ def check(symbol):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # =========================
-    # 🟢 SNIPER COMPRA
-    # =========================
-    fundo = df['low'].rolling(10).min()
+    if is_lateral(df):
+        return
 
-    cruzou_cima = prev['close'] < prev['sma_branca'] and last['close'] > last['sma_branca']
-    virada_cima = last['sma_branca'] > prev['sma_branca']
-    acima_fundo = last['close'] > fundo.iloc[-1]
-
-    sniper_buy = cruzou_cima and virada_cima and acima_fundo
-
-    # =========================
-    # 🔻 SNIPER VENDA
-    # =========================
-    topo = df['high'].rolling(10).max()
-
-    cruzou_baixo = prev['close'] > prev['sma_branca'] and last['close'] < last['sma_branca']
-    virada_baixo = last['sma_branca'] < prev['sma_branca']
-    abaixo_topo = last['close'] < topo.iloc[-1]
-
-    sniper_sell = cruzou_baixo and virada_baixo and abaixo_topo
-
-    # =========================
-    # 🚀 COMPRA CONFIRMADA
-    # =========================
-    confirm_buy = (
-        prev['trend'] == True and
-        prev['close'] > prev['st'] and
-        last['close'] > last['sma_branca'] and
-        last['sma_branca'] > last['sma_amarela']
+    # SNIPER BUY
+    sniper_buy = (
+        prev['close'] < prev['sma8'] and
+        last['close'] > last['sma8']
     )
 
-    # =========================
-    # 💀 VENDA CONFIRMADA
-    # =========================
-    confirm_sell = (
-        prev['trend'] == False and
-        prev['close'] < prev['st'] and
-        last['close'] < last['sma_branca'] and
-        last['sma_branca'] < last['sma_amarela']
+    # SNIPER SELL
+    sniper_sell = (
+        prev['close'] > prev['sma8'] and
+        last['close'] < last['sma8']
     )
 
-    # =========================
-    # ALERTAS
-    # =========================
-    if sniper_buy and sent_alerts.get(symbol) != "sniper_buy":
-        send(f"🟢 SNIPER BUY: {symbol}\n↗️ Início de reversão")
-        sent_alerts[symbol] = "sniper_buy"
+    # CONFIRMAÇÃO
+    confirm_buy = last['sma8'] > last['sma21']
+    confirm_sell = last['sma8'] < last['sma21']
 
-    elif confirm_buy and sent_alerts.get(symbol) != "confirm_buy":
-        send(f"🚀 BUY CONFIRMADO: {symbol}\n📈 Tendência validada")
-        sent_alerts[symbol] = "confirm_buy"
+    signal = None
 
-    elif sniper_sell and sent_alerts.get(symbol) != "sniper_sell":
-        send(f"🔻 SNIPER SELL: {symbol}\n↘️ Início de queda")
-        sent_alerts[symbol] = "sniper_sell"
+    if sniper_buy:
+        signal = "SNIPER BUY"
+    elif sniper_sell:
+        signal = "SNIPER SELL"
+    elif confirm_buy:
+        signal = "BUY"
+    elif confirm_sell:
+        signal = "SELL"
 
-    elif confirm_sell and sent_alerts.get(symbol) != "confirm_sell":
-        send(f"💀 SELL CONFIRMADO: {symbol}\n📉 Tendência de baixa")
-        sent_alerts[symbol] = "confirm_sell"
+    if signal and sent_alerts.get(symbol) != signal:
+        data = {
+            "symbol": symbol,
+            "signal": signal,
+            "time": datetime.now(timezone).strftime("%H:%M"),
+            "strength": round(strength(df), 4)
+        }
+
+        signals.append(data)
+        history.append(data)
+        send(f"{signal} - {symbol}")
+
+        sent_alerts[symbol] = signal
 
 # =========================
-# LOOP PRINCIPAL
+# LOOP
+# =========================
+def loop():
+    while True:
+        for s in symbols:
+            check(s)
+            time.sleep(1)
+        time.sleep(60)
+
+# =========================
+# API
+# =========================
+@app.route("/api/signals")
+def api_signals():
+    return jsonify(signals[-10:])
+
+@app.route("/api/history")
+def api_history():
+    return jsonify(history[-50:])
+
+@app.route("/api/ranking")
+def api_ranking():
+    ranking = []
+    for s in symbols:
+        df = get_data(s)
+        if df is None:
+            continue
+        df = calculate(df)
+        ranking.append({
+            "symbol": s,
+            "score": strength(df)
+        })
+
+    ranking = sorted(ranking, key=lambda x: x['score'], reverse=True)
+    return jsonify(ranking)
+
+# =========================
+# FRONT (PAINEL)
+# =========================
+@app.route("/")
+def dashboard():
+    return """
+    <html>
+    <head>
+    <title>BOT PRO</title>
+    <style>
+    body { background:#0e0e0e; color:white; font-family:Arial; }
+    .card { padding:10px; margin:10px; background:#1c1c1c; border-radius:10px;}
+    </style>
+    </head>
+    <body>
+
+    <h1>📊 BOT SNIPER PRO</h1>
+
+    <div class="card">
+    <h2>🔥 Sinais</h2>
+    <div id="signals"></div>
+    </div>
+
+    <div class="card">
+    <h2>🏆 Ranking</h2>
+    <div id="ranking"></div>
+    </div>
+
+    <script>
+    async function load(){
+        let s = await fetch('/api/signals').then(r=>r.json())
+        let r = await fetch('/api/ranking').then(r=>r.json())
+
+        document.getElementById('signals').innerHTML =
+            s.map(x=>`${x.symbol} - ${x.signal}`).join('<br>')
+
+        document.getElementById('ranking').innerHTML =
+            r.map(x=>`${x.symbol} ⭐ ${x.score}`).join('<br>')
+    }
+
+    setInterval(load, 3000)
+    load()
+    </script>
+
+    </body>
+    </html>
+    """
+
+# =========================
+# START
 # =========================
 if __name__ == "__main__":
-    keep_alive()
-    time.sleep(10)
+    Thread(target=loop).start()
 
-    send("🤖 Bot SNIPER BIDIRECIONAL iniciado")
-
-    while True:
-        try:
-            for s in symbols:
-                check(s)
-                time.sleep(1)
-
-        except Exception as e:
-            print("Erro geral:", e)
-
-        time.sleep(60)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
