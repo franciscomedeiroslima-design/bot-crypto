@@ -25,9 +25,11 @@ symbols = [
 sent_alerts = {}
 signals = []
 
-api_error_sent = False
-bot_error_sent = False
-last_heartbeat = time.time()
+state = {
+    "api_error": False,
+    "bot_error": False,
+    "last_heartbeat": time.time()
+}
 
 # =========================
 # FLASK
@@ -57,7 +59,7 @@ def keep_alive():
 def send(msg):
     try:
         agora = datetime.now(timezone).strftime("%H:%M")
-        msg_final = f"{msg}\n🕒 {agora} (SC)"
+        msg_final = f"{msg}\n🕒 {agora}"
 
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.get(url, params={"chat_id": CHAT_ID, "text": msg_final}, timeout=10)
@@ -68,8 +70,6 @@ def send(msg):
 # DADOS
 # =========================
 def get_data(symbol):
-    global api_error_sent
-
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
         data = requests.get(url, timeout=10).json()
@@ -78,18 +78,18 @@ def get_data(symbol):
         df = df.iloc[::-1]
         df.columns = ["time","open","high","low","close","volume","turnover"]
 
-        if api_error_sent:
-            send("✅ API restabelecida")
-            api_error_sent = False
+        if state["api_error"]:
+            send("✅ API normalizada")
+            state["api_error"] = False
 
         return df.astype(float)
 
     except Exception as e:
         print("Erro API:", e)
 
-        if not api_error_sent:
-            send("🚨 ERRO: API Bybit offline")
-            api_error_sent = True
+        if not state["api_error"]:
+            send("🚨 ERRO API")
+            state["api_error"] = True
 
         return None
 
@@ -122,25 +122,50 @@ def supertrend(df, period=10, factor=2):
     return df
 
 # =========================
-# INDICADORES + SNIPER
+# INDICADORES PRO
 # =========================
 def calculate(df):
+
     df['sma8'] = df['close'].rolling(8).mean()
     df['sma21'] = df['close'].rolling(21).mean()
 
-    df['branca_subindo'] = df['sma8'] > df['sma8'].shift(1)
+    # inclinação
+    df['sma8_slope'] = df['sma8'] - df['sma8'].shift(1)
 
-    # SNIPER (antecipação)
+    # força candle
+    df['body'] = abs(df['close'] - df['open'])
+    df['range'] = df['high'] - df['low']
+    df['strong_candle'] = df['body'] > (df['range'] * 0.6)
+
+    # volume
+    df['vol_mean'] = df['volume'].rolling(20).mean()
+    df['vol_ok'] = df['volume'] > df['vol_mean']
+
+    # lateralização
+    df['lateral'] = abs(df['sma8'] - df['sma21']) < 0.001
+
+    # =========================
+    # SNIPER REAL
+    # =========================
+
     df['sniper_buy'] = (
         (df['close'] > df['sma8']) &
+        (df['sma8_slope'] > 0) &
         (df['sma8'] > df['sma21']) &
-        (df['close'].shift(1) <= df['sma8'])
+        (df['close'].shift(1) < df['sma8']) &
+        (df['strong_candle']) &
+        (df['vol_ok']) &
+        (~df['lateral'])
     )
 
     df['sniper_sell'] = (
         (df['close'] < df['sma8']) &
+        (df['sma8_slope'] < 0) &
         (df['sma8'] < df['sma21']) &
-        (df['close'].shift(1) >= df['sma8'])
+        (df['close'].shift(1) > df['sma8']) &
+        (df['strong_candle']) &
+        (df['vol_ok']) &
+        (~df['lateral'])
     )
 
     return supertrend(df)
@@ -149,67 +174,53 @@ def calculate(df):
 # SINAIS
 # =========================
 def check(symbol):
-    try:
-        df_raw = get_data(symbol)
-        if df_raw is None:
-            return
 
-        df = calculate(df_raw)
+    df_raw = get_data(symbol)
+    if df_raw is None:
+        return
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+    df = calculate(df_raw)
 
-        # CONFIRMADO
-        compra = (
-            prev['trend'] and
-            prev['close'] > prev['st'] and
-            last['close'] > last['sma8'] > last['sma21']
-        )
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-        venda = (
-            not prev['trend'] and
-            prev['close'] < prev['st'] and
-            last['close'] < last['sma8'] < last['sma21']
-        )
+    agora = datetime.now(timezone).strftime("%H:%M")
 
-        # SNIPER
-        sniper_buy = last['sniper_buy']
-        sniper_sell = last['sniper_sell']
+    # =========================
+    # CONFIRMAÇÃO
+    # =========================
+    compra = prev['trend'] == False and last['trend'] == True
+    venda = prev['trend'] == True and last['trend'] == False
 
-        agora = datetime.now(timezone).strftime("%H:%M")
+    # =========================
+    # SNIPER
+    # =========================
+    sniper_buy = last['sniper_buy']
+    sniper_sell = last['sniper_sell']
 
-        # COMPRA
-        if compra and sent_alerts.get(symbol) != "buy":
-            msg = f"🚀 COMPRA CONFIRMADA: {symbol}"
-            send(msg)
+    # =========================
+    # EXECUÇÃO
+    # =========================
 
-            signals.append({"symbol": symbol, "type": "BUY", "time": agora})
-            sent_alerts[symbol] = "buy"
+    if sniper_buy and sent_alerts.get(symbol) != "sniper_buy":
+        send(f"🎯 SNIPER COMPRA: {symbol}")
+        signals.append({"symbol": symbol, "type": "SNIPER BUY", "time": agora})
+        sent_alerts[symbol] = "sniper_buy"
 
-        elif sniper_buy and sent_alerts.get(symbol) != "sniper_buy":
-            msg = f"🎯 SNIPER COMPRA: {symbol}"
-            send(msg)
+    elif compra and sent_alerts.get(symbol) != "buy":
+        send(f"🚀 COMPRA CONFIRMADA: {symbol}")
+        signals.append({"symbol": symbol, "type": "BUY", "time": agora})
+        sent_alerts[symbol] = "buy"
 
-            signals.append({"symbol": symbol, "type": "SNIPER BUY", "time": agora})
-            sent_alerts[symbol] = "sniper_buy"
+    if sniper_sell and sent_alerts.get(symbol) != "sniper_sell":
+        send(f"🎯 SNIPER VENDA: {symbol}")
+        signals.append({"symbol": symbol, "type": "SNIPER SELL", "time": agora})
+        sent_alerts[symbol] = "sniper_sell"
 
-        # VENDA
-        if venda and sent_alerts.get(symbol) != "sell":
-            msg = f"🔻 VENDA CONFIRMADA: {symbol}"
-            send(msg)
-
-            signals.append({"symbol": symbol, "type": "SELL", "time": agora})
-            sent_alerts[symbol] = "sell"
-
-        elif sniper_sell and sent_alerts.get(symbol) != "sniper_sell":
-            msg = f"🎯 SNIPER VENDA: {symbol}"
-            send(msg)
-
-            signals.append({"symbol": symbol, "type": "SNIPER SELL", "time": agora})
-            sent_alerts[symbol] = "sniper_sell"
-
-    except Exception as e:
-        print("Erro:", e)
+    elif venda and sent_alerts.get(symbol) != "sell":
+        send(f"🔻 VENDA CONFIRMADA: {symbol}")
+        signals.append({"symbol": symbol, "type": "SELL", "time": agora})
+        sent_alerts[symbol] = "sell"
 
 # =========================
 # LOOP
@@ -226,16 +237,15 @@ if __name__ == "__main__":
                 check(s)
                 time.sleep(1)
 
-            if time.time() - last_heartbeat >= 14400:
+            if time.time() - state["last_heartbeat"] >= 14400:
                 send("📡 Monitoramento ativo")
-                last_heartbeat = time.time()
+                state["last_heartbeat"] = time.time()
 
         except Exception as e:
             print("Erro geral:", e)
 
-            
-            if not bot_error_sent:
-                send("🚨 ERRO CRÍTICO NO BOT")
-                bot_error_sent = True
+            if not state["bot_error"]:
+                send("🚨 ERRO CRÍTICO")
+                state["bot_error"] = True
 
         time.sleep(60)
