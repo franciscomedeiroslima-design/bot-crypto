@@ -46,6 +46,7 @@ symbols = [
 sent_alerts = {}
 last_heartbeat = time.time()
 
+# flags de erro
 api_error_sent = False
 bot_error_sent = False
 
@@ -67,8 +68,6 @@ def send(msg):
 # DADOS
 # =========================
 def get_data(symbol):
-    global api_error_sent
-
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
         data = requests.get(url, timeout=10).json()
@@ -77,20 +76,11 @@ def get_data(symbol):
         df = df.iloc[::-1]
         df.columns = ["time","open","high","low","close","volume","turnover"]
 
-        if api_error_sent:
-            send("✅ API restabelecida")
-            api_error_sent = False
-
         return df.astype(float)
 
     except Exception as e:
         print(f"Erro API {symbol}:", e)
-
-        if not api_error_sent:
-            send("🚨 ERRO: Falha na API (Bybit)")
-            api_error_sent = True
-
-        return None
+        raise e  # joga o erro pro loop principal tratar
 
 # =========================
 # SUPERTREND
@@ -131,15 +121,10 @@ def calculate(df):
     return supertrend(df)
 
 # =========================
-# ESTRATÉGIA SNIPER (BIDIRECIONAL)
+# ESTRATÉGIA SNIPER
 # =========================
 def check(symbol):
-    global signals
-
     df_raw = get_data(symbol)
-    if df_raw is None:
-        return
-
     df = calculate(df_raw)
 
     last = df.iloc[-1]
@@ -202,7 +187,7 @@ if __name__ == "__main__":
                 check(s)
                 time.sleep(1)
 
-            # STATUS A CADA 4 HORAS
+            # STATUS 4H
             if time.time() - last_heartbeat >= 14400:
                 send("📡 Monitoramento ativo")
                 last_heartbeat = time.time()
@@ -210,8 +195,13 @@ if __name__ == "__main__":
         except Exception as e:
             print("Erro geral:", e)
 
-            if not bot_error_sent:
-                send("🚨 ERRO CRÍTICO NO BOT")
-                bot_error_sent = True
+            if "API" in str(e) or "bybit" in str(e):
+                if not api_error_sent:
+                    send("🚨 ERRO: Falha na API")
+                    api_error_sent = True
+            else:
+                if not bot_error_sent:
+                    send("🚨 ERRO CRÍTICO NO BOT")
+                    bot_error_sent = True
 
         time.sleep(60)
