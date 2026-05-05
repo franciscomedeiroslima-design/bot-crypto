@@ -233,7 +233,7 @@ if __name__ == "__main__":
         except Exception as e:
             print("Erro geral:", e)
 
-            global bot_error_sent
+            
             if not bot_error_sent:
                 send("🚨 ERRO CRÍTICO NO BOT")
                 bot_error_sent = True
