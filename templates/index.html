@@ -46,7 +46,6 @@ symbols = [
 sent_alerts = {}
 last_heartbeat = time.time()
 
-# flags de erro
 api_error_sent = False
 bot_error_sent = False
 
@@ -70,9 +69,18 @@ def send(msg):
 def get_data(symbol):
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-        data = requests.get(url, timeout=10).json()
+        response = requests.get(url, timeout=10)
+
+        data = response.json()
+
+        if 'result' not in data or 'list' not in data['result']:
+            raise Exception("Resposta inválida da API")
 
         df = pd.DataFrame(data['result']['list'])
+
+        if df.empty:
+            raise Exception("DataFrame vazio")
+
         df = df.iloc[::-1]
         df.columns = ["time","open","high","low","close","volume","turnover"]
 
@@ -80,7 +88,7 @@ def get_data(symbol):
 
     except Exception as e:
         print(f"Erro API {symbol}:", e)
-        raise e  # joga o erro pro loop principal tratar
+        raise e
 
 # =========================
 # SUPERTREND
@@ -121,56 +129,49 @@ def calculate(df):
     return supertrend(df)
 
 # =========================
-# ESTRATÉGIA SNIPER
+# ESTRATÉGIA
 # =========================
 def check(symbol):
-    df_raw = get_data(symbol)
-    df = calculate(df_raw)
+    try:
+        df_raw = get_data(symbol)
 
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+        if len(df_raw) < 30:
+            return
 
-    # COMPRA
-    compra = (
-        prev['trend'] == False and
-        last['trend'] == True and
-        last['close'] > last['sma_branca'] and
-        last['sma_branca'] > last['sma_amarela']
-    )
+        df = calculate(df_raw)
 
-    # VENDA
-    venda = (
-        prev['trend'] == True and
-        last['trend'] == False and
-        last['close'] < last['sma_branca'] and
-        last['sma_branca'] < last['sma_amarela']
-    )
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-    agora = datetime.now(timezone).strftime("%H:%M")
+        compra = (
+            prev['trend'] == False and
+            last['trend'] == True and
+            last['close'] > last['sma_branca'] and
+            last['sma_branca'] > last['sma_amarela']
+        )
 
-    if compra and sent_alerts.get(symbol) != "buy":
-        msg = f"🚀 COMPRA SNIPER: {symbol}\nRompimento + tendência"
-        send(msg)
+        venda = (
+            prev['trend'] == True and
+            last['trend'] == False and
+            last['close'] < last['sma_branca'] and
+            last['sma_branca'] < last['sma_amarela']
+        )
 
-        signals.append({
-            "symbol": symbol,
-            "type": "COMPRA",
-            "time": agora
-        })
+        agora = datetime.now(timezone).strftime("%H:%M")
 
-        sent_alerts[symbol] = "buy"
+        if compra and sent_alerts.get(symbol) != "buy":
+            send(f"🚀 COMPRA SNIPER: {symbol}")
+            signals.append({"symbol": symbol, "type": "COMPRA", "time": agora})
+            sent_alerts[symbol] = "buy"
 
-    elif venda and sent_alerts.get(symbol) != "sell":
-        msg = f"🔻 VENDA SNIPER: {symbol}\nRompimento + tendência"
-        send(msg)
+        elif venda and sent_alerts.get(symbol) != "sell":
+            send(f"🔻 VENDA SNIPER: {symbol}")
+            signals.append({"symbol": symbol, "type": "VENDA", "time": agora})
+            sent_alerts[symbol] = "sell"
 
-        signals.append({
-            "symbol": symbol,
-            "type": "VENDA",
-            "time": agora
-        })
-
-        sent_alerts[symbol] = "sell"
+    except Exception as e:
+        print(f"Erro no check {symbol}:", e)
+        raise e
 
 # =========================
 # LOOP PRINCIPAL
@@ -187,7 +188,6 @@ if __name__ == "__main__":
                 check(s)
                 time.sleep(1)
 
-            # STATUS 4H
             if time.time() - last_heartbeat >= 14400:
                 send("📡 Monitoramento ativo")
                 last_heartbeat = time.time()
@@ -195,13 +195,13 @@ if __name__ == "__main__":
         except Exception as e:
             print("Erro geral:", e)
 
-            if "API" in str(e) or "bybit" in str(e):
+            if "API" in str(e) or "Bybit" in str(e):
                 if not api_error_sent:
-                    send("🚨 ERRO: Falha na API")
+                    send("🚨 Falha na API")
                     api_error_sent = True
             else:
                 if not bot_error_sent:
-                    send("🚨 ERRO CRÍTICO NO BOT")
+                    send("🚨 Erro crítico no bot")
                     bot_error_sent = True
 
         time.sleep(60)
