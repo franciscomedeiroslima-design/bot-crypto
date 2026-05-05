@@ -1,203 +1,45 @@
-import os
-import requests
-import pandas as pd
-import time
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from flask import Flask, jsonify
-from threading import Thread
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Painel PRO</title>
+  <script src="https://s3.tradingview.com/tv.js"></script>
+</head>
 
-# =========================
-# FLASK
-# =========================
-app = Flask(__name__)
+<body style="background:#0f172a;color:white;font-family:Arial">
 
-signals = []
+<h2>📊 Painel PRO</h2>
 
-@app.route('/')
-def home():
-    return "Bot Online 🚀"
+<div id="chart" style="height:400px;"></div>
 
-@app.route('/api/signals')
-def dashboard():
-    return jsonify(signals[-50:])
+<h3>📡 Sinais em tempo real</h3>
+<div id="signals"></div>
 
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+<script>
+new TradingView.widget({
+  "container_id": "chart",
+  "symbol": "BYBIT:BTCUSDT",
+  "interval": "30",
+  "theme": "dark",
+  "style": "1",
+  "locale": "br",
+  "height": 400
+});
 
-def keep_alive():
-    Thread(target=run).start()
+async function loadSignals(){
+  let res = await fetch('/signals');
+  let data = await res.json();
 
-# =========================
-# CONFIG
-# =========================
-TOKEN = os.environ.get("TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+  let html = "";
 
-timezone = ZoneInfo("America/Sao_Paulo")
+  data.signals.reverse().forEach(s => {
+    html += `<p>⚡ ${s.type} - ${s.symbol} (${s.time})</p>`;
+  });
 
-symbols = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT",
-    "DOGEUSDT","ATOMUSDT","APTUSDT","GALAUSDT",
-    "FILUSDT","ICPUSDT","LINKUSDT"
-]
+  document.getElementById("signals").innerHTML = html;
+}
 
-sent_alerts = {}
-last_heartbeat = time.time()
+setInterval(loadSignals, 3000);
+</script>
 
-# FLAGS DE CONTROLE
-api_error_sent = False
-bot_error_sent = False
-
-# =========================
-# TELEGRAM
-# =========================
-def send(msg):
-    try:
-        agora = datetime.now(timezone).strftime("%H:%M")
-        msg_final = f"{msg}\n🕒 {agora} (SC)"
-
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.get(url, params={"chat_id": CHAT_ID, "text": msg_final}, timeout=10)
-    except Exception as e:
-        print("Erro Telegram:", e)
-
-# =========================
-# API BYBIT
-# =========================
-def get_data(symbol):
-    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-
-    response = requests.get(url, timeout=10)
-
-    if response.status_code != 200:
-        raise Exception("Erro API")
-
-    data = response.json()
-
-    if 'result' not in data or 'list' not in data['result']:
-        raise Exception("Resposta inválida")
-
-    df = pd.DataFrame(data['result']['list'])
-    df = df.iloc[::-1]
-    df.columns = ["time","open","high","low","close","volume","turnover"]
-
-    return df.astype(float)
-
-# =========================
-# SUPERTREND
-# =========================
-def supertrend(df, period=10, factor=2):
-    hl2 = (df['high'] + df['low']) / 2
-    atr = (df['high'] - df['low']).rolling(period).mean()
-
-    upper = hl2 + factor * atr
-    lower = hl2 - factor * atr
-
-    trend = [True]
-    st = [lower.iloc[0]]
-
-    for i in range(1, len(df)):
-        if df['close'].iloc[i] > st[i-1]:
-            trend.append(True)
-        elif df['close'].iloc[i] < st[i-1]:
-            trend.append(False)
-        else:
-            trend.append(trend[i-1])
-
-        st.append(lower.iloc[i] if trend[i] else upper.iloc[i])
-
-    df['st'] = st
-    df['trend'] = trend
-
-    return df
-
-# =========================
-# INDICADORES
-# =========================
-def calculate(df):
-    df['sma_branca'] = df['close'].rolling(8).mean()
-    df['sma_amarela'] = df['close'].rolling(21).mean()
-    df['branca_subindo'] = df['sma_branca'] > df['sma_branca'].shift(1)
-
-    return supertrend(df)
-
-# =========================
-# ESTRATÉGIA
-# =========================
-def check(symbol):
-    df = calculate(get_data(symbol))
-
-    if len(df) < 30:
-        return
-
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    compra = (
-        prev['trend'] == False and
-        last['trend'] == True and
-        last['close'] > last['sma_branca'] and
-        last['sma_branca'] > last['sma_amarela']
-    )
-
-    venda = (
-        prev['trend'] == True and
-        last['trend'] == False and
-        last['close'] < last['sma_branca'] and
-        last['sma_branca'] < last['sma_amarela']
-    )
-
-    agora = datetime.now(timezone).strftime("%H:%M")
-
-    if compra and sent_alerts.get(symbol) != "buy":
-        send(f"🚀 COMPRA SNIPER: {symbol}")
-        signals.append({"symbol": symbol, "type": "COMPRA", "time": agora})
-        sent_alerts[symbol] = "buy"
-
-    elif venda and sent_alerts.get(symbol) != "sell":
-        send(f"🔻 VENDA SNIPER: {symbol}")
-        signals.append({"symbol": symbol, "type": "VENDA", "time": agora})
-        sent_alerts[symbol] = "sell"
-
-# =========================
-# LOOP
-# =========================
-if __name__ == "__main__":
-    keep_alive()
-    time.sleep(5)
-
-    send("🤖 Bot iniciado com sucesso")
-
-    while True:
-        erro_ocorreu = False
-
-        try:
-            for s in symbols:
-                check(s)
-                time.sleep(1)
-
-        except Exception as e:
-            erro_ocorreu = True
-            print("Erro:", e)
-
-            if not api_error_sent:
-                send("🚨 Falha na API")
-                api_error_sent = True
-
-            if not bot_error_sent:
-                send("🚨 Erro no bot")
-                bot_error_sent = True
-
-        if not erro_ocorreu:
-            if api_error_sent:
-                send("✅ API normalizada")
-            api_error_sent = False
-            bot_error_sent = False
-
-        if time.time() - last_heartbeat >= 14400:
-            send("📡 Monitoramento ativo")
-            last_heartbeat = time.time()
-
-        time.sleep(60)
+</body>
+</html>
