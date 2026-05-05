@@ -8,7 +8,7 @@ from flask import Flask, jsonify
 from threading import Thread
 
 # =========================
-# FLASK (PAINEL)
+# FLASK
 # =========================
 app = Flask(__name__)
 
@@ -18,8 +18,8 @@ signals = []
 def home():
     return "Bot DOC Online 🚀"
 
-@app.route('/dashboard')
-def dashboard():
+@app.route('/api/signals')
+def get_signals():
     return jsonify(signals[-50:])
 
 def run():
@@ -68,19 +68,15 @@ def send(msg):
 # DADOS
 # =========================
 def get_data(symbol):
-    try:
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-        data = requests.get(url, timeout=10).json()
+    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
+    response = requests.get(url, timeout=10)
+    data = response.json()
 
-        df = pd.DataFrame(data['result']['list'])
-        df = df.iloc[::-1]
-        df.columns = ["time","open","high","low","close","volume","turnover"]
+    df = pd.DataFrame(data['result']['list'])
+    df = df.iloc[::-1]
+    df.columns = ["time","open","high","low","close","volume","turnover"]
 
-        return df.astype(float)
-
-    except Exception as e:
-        print(f"Erro API {symbol}:", e)
-        raise e
+    return df.astype(float)
 
 # =========================
 # SUPERTREND
@@ -121,7 +117,7 @@ def calculate(df):
     return supertrend(df)
 
 # =========================
-# ESTRATÉGIA SNIPER
+# SNIPER BIDIRECIONAL
 # =========================
 def check(symbol):
     df_raw = get_data(symbol)
@@ -147,7 +143,7 @@ def check(symbol):
     agora = datetime.now(timezone).strftime("%H:%M")
 
     if compra and sent_alerts.get(symbol) != "buy":
-        send(f"🚀 COMPRA SNIPER: {symbol}\nRompimento + tendência")
+        send(f"🚀 COMPRA SNIPER: {symbol}")
 
         signals.append({
             "symbol": symbol,
@@ -158,7 +154,7 @@ def check(symbol):
         sent_alerts[symbol] = "buy"
 
     elif venda and sent_alerts.get(symbol) != "sell":
-        send(f"🔻 VENDA SNIPER: {symbol}\nRompimento + tendência")
+        send(f"🔻 VENDA SNIPER: {symbol}")
 
         signals.append({
             "symbol": symbol,
@@ -169,7 +165,7 @@ def check(symbol):
         sent_alerts[symbol] = "sell"
 
 # =========================
-# LOOP PRINCIPAL
+# LOOP
 # =========================
 if __name__ == "__main__":
     keep_alive()
@@ -183,14 +179,21 @@ if __name__ == "__main__":
                 check(s)
                 time.sleep(1)
 
+            # STATUS 4H
             if time.time() - last_heartbeat >= 14400:
                 send("📡 Monitoramento ativo")
                 last_heartbeat = time.time()
 
+            # reset erro se rodou normal
+            api_error_sent = False
+            bot_error_sent = False
+
         except Exception as e:
             print("Erro geral:", e)
 
-            if "bybit" in str(e).lower():
+            erro = str(e).lower()
+
+            if "api" in erro or "bybit" in erro:
                 if not api_error_sent:
                     send("🚨 ERRO: Falha na API")
                     api_error_sent = True
