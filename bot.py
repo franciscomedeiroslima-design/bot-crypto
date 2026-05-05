@@ -7,19 +7,21 @@ from zoneinfo import ZoneInfo
 from flask import Flask
 from threading import Thread
 
+# =========================
+# SERVIDOR (Render)
+# =========================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot Estratégia DOC Online!"
+    return "Bot SNIPER BIDIRECIONAL 🚀"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run)
-    t.start()
+    Thread(target=run).start()
 
 # =========================
 # CONFIG
@@ -27,69 +29,44 @@ def keep_alive():
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-if not TOKEN or not CHAT_ID:
-    raise ValueError("TOKEN ou CHAT_ID não definidos!")
-
 timezone = ZoneInfo("America/Sao_Paulo")
 
 symbols = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT","DOGEUSDT",
-    "ATOMUSDT","APTUSDT","GALAUSDT","FILUSDT","ICPUSDT","LINKUSDT"
+    "BTCUSDT","ETHUSDT","SOLUSDT","DOTUSDT","AVAXUSDT",
+    "DOGEUSDT","ATOMUSDT","APTUSDT","GALAUSDT","FILUSDT"
 ]
 
 sent_alerts = {}
-last_heartbeat = time.time()
-
-api_error_sent = False
-bot_error_sent = False
 
 # =========================
 # TELEGRAM
 # =========================
 def send(msg):
     try:
-        agora = datetime.now(timezone).strftime("%H:%M")
-        msg_final = f"{msg}\n🕒 {agora} (SC)"
+        hora = datetime.now(timezone).strftime("%H:%M")
+        msg_final = f"{msg}\n🕒 {hora} (SC)"
 
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.get(url, params={"chat_id": CHAT_ID, "text": msg_final}, timeout=10)
     except Exception as e:
-        print(f"Erro Telegram: {e}")
+        print("Erro Telegram:", e)
 
 # =========================
 # DADOS
 # =========================
 def get_data(symbol):
-    global api_error_sent
-
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
         data = requests.get(url, timeout=10).json()
 
-        if 'result' not in data or 'list' not in data['result']:
-            raise Exception("Resposta inválida da API")
-
         df = pd.DataFrame(data['result']['list'])
-
-        if df.empty:
-            raise Exception("DataFrame vazio")
-
         df = df.iloc[::-1]
         df.columns = ["time","open","high","low","close","volume","turnover"]
-
-        if api_error_sent:
-            send("✅ API restabelecida")
-            api_error_sent = False
 
         return df.astype(float)
 
     except Exception as e:
-        print(f"Erro API {symbol}: {e}")
-
-        if not api_error_sent:
-            send("🚨 ERRO: Falha ao conectar com API (Bybit)")
-            api_error_sent = True
-
+        print("Erro API:", e)
         return None
 
 # =========================
@@ -126,59 +103,90 @@ def supertrend(df, period=10, factor=2):
 def calculate(df):
     df['sma_branca'] = df['close'].rolling(8).mean()
     df['sma_amarela'] = df['close'].rolling(21).mean()
-    df['branca_subindo'] = df['sma_branca'] > df['sma_branca'].shift(1)
-
     return supertrend(df)
 
 # =========================
-# SINAIS
+# LÓGICA SNIPER + CONFIRMAÇÃO
 # =========================
 def check(symbol):
-    try:
-        df_raw = get_data(symbol)
-        if df_raw is None or len(df_raw) < 30:
-            return
+    df = get_data(symbol)
+    if df is None:
+        return
 
-        df = calculate(df_raw)
+    df = calculate(df)
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-        compra = (
-            prev['trend'] == True and
-            prev['close'] > prev['st'] and
-            last['close'] > last['sma_branca'] and
-            last['sma_branca'] > last['sma_amarela'] and
-            last['branca_subindo']
-        )
+    # =========================
+    # 🟢 SNIPER COMPRA
+    # =========================
+    fundo = df['low'].rolling(10).min()
 
-        venda = (
-            prev['trend'] == False and
-            prev['close'] < prev['st'] and
-            last['close'] < last['sma_branca'] and
-            last['sma_branca'] < last['sma_amarela'] and
-            not last['branca_subindo']
-        )
+    cruzou_cima = prev['close'] < prev['sma_branca'] and last['close'] > last['sma_branca']
+    virada_cima = last['sma_branca'] > prev['sma_branca']
+    acima_fundo = last['close'] > fundo.iloc[-1]
 
-        if compra and sent_alerts.get(symbol) != "buy":
-            send(f"🚀 COMPRA: {symbol}\n📈 Rompimento + tendência")
-            sent_alerts[symbol] = "buy"
+    sniper_buy = cruzou_cima and virada_cima and acima_fundo
 
-        elif venda and sent_alerts.get(symbol) != "sell":
-            send(f"🔻 VENDA: {symbol}\n📉 Rompimento + tendência")
-            sent_alerts[symbol] = "sell"
+    # =========================
+    # 🔻 SNIPER VENDA
+    # =========================
+    topo = df['high'].rolling(10).max()
 
-    except Exception as e:
-        print(f"Erro no check de {symbol}: {e}")
+    cruzou_baixo = prev['close'] > prev['sma_branca'] and last['close'] < last['sma_branca']
+    virada_baixo = last['sma_branca'] < prev['sma_branca']
+    abaixo_topo = last['close'] < topo.iloc[-1]
+
+    sniper_sell = cruzou_baixo and virada_baixo and abaixo_topo
+
+    # =========================
+    # 🚀 COMPRA CONFIRMADA
+    # =========================
+    confirm_buy = (
+        prev['trend'] == True and
+        prev['close'] > prev['st'] and
+        last['close'] > last['sma_branca'] and
+        last['sma_branca'] > last['sma_amarela']
+    )
+
+    # =========================
+    # 💀 VENDA CONFIRMADA
+    # =========================
+    confirm_sell = (
+        prev['trend'] == False and
+        prev['close'] < prev['st'] and
+        last['close'] < last['sma_branca'] and
+        last['sma_branca'] < last['sma_amarela']
+    )
+
+    # =========================
+    # ALERTAS
+    # =========================
+    if sniper_buy and sent_alerts.get(symbol) != "sniper_buy":
+        send(f"🟢 SNIPER BUY: {symbol}\n↗️ Início de reversão")
+        sent_alerts[symbol] = "sniper_buy"
+
+    elif confirm_buy and sent_alerts.get(symbol) != "confirm_buy":
+        send(f"🚀 BUY CONFIRMADO: {symbol}\n📈 Tendência validada")
+        sent_alerts[symbol] = "confirm_buy"
+
+    elif sniper_sell and sent_alerts.get(symbol) != "sniper_sell":
+        send(f"🔻 SNIPER SELL: {symbol}\n↘️ Início de queda")
+        sent_alerts[symbol] = "sniper_sell"
+
+    elif confirm_sell and sent_alerts.get(symbol) != "confirm_sell":
+        send(f"💀 SELL CONFIRMADO: {symbol}\n📉 Tendência de baixa")
+        sent_alerts[symbol] = "confirm_sell"
 
 # =========================
-# MAIN
+# LOOP PRINCIPAL
 # =========================
 if __name__ == "__main__":
     keep_alive()
     time.sleep(10)
 
-    send("🤖 Bot iniciado com sucesso")
+    send("🤖 Bot SNIPER BIDIRECIONAL iniciado")
 
     while True:
         try:
@@ -186,20 +194,7 @@ if __name__ == "__main__":
                 check(s)
                 time.sleep(1)
 
-            # STATUS A CADA 4H
-            if time.time() - last_heartbeat >= 14400:
-                send("📡 Monitoramento ativo")
-                last_heartbeat = time.time()
-
-            # reset erro se tudo ok
-            if bot_error_sent:
-                bot_error_sent = False
-
         except Exception as e:
-            print(f"Erro geral: {e}")
-
-            if not bot_error_sent:
-                send("🚨 ERRO CRÍTICO: Bot falhou")
-                bot_error_sent = True
+            print("Erro geral:", e)
 
         time.sleep(60)
