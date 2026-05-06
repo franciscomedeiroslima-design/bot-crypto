@@ -9,26 +9,29 @@ from threading import Thread
 
 app = Flask(__name__)
 
-signals = []
-
 # =========================
 # CONFIG
 # =========================
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
+
 timezone = ZoneInfo("America/Sao_Paulo")
 
-# 🔥 LISTA ATUALIZADA
 symbols = [
-    "DOTUSDT","IMXUSDT","ETCUSDT","ATOMUSDT","AVAXUSDT",
-    "GALAUSDT","AXSUSDT","ONDOUSDT","APTUSDT","ALGOUSDT",
-    "LDOUSDT","HBARUSDT","APEUSDT","JASMYUSDT","TRXUSDT",
-    "NEOUSDT","XTZUSDT","TONUSDT","BTCUSDT","DOGEUSDT",
-    "SOLUSDT","SEIUSDT","ETHUSDT"
+    "DOTUSDT","IMXUSDT","ETCUSDT","ATOMUSDT","AVAXUSDT","GALAUSDT",
+    "AXSUSDT","ONDOUSDT","APTUSDT","ALGOUSDT","LDOUSDT","HBARUSDT",
+    "APEUSDT","JASMYUSDT","TRXUSDT","NEOUSDT","XTZUSDT","TONUSDT",
+    "BTCUSDT","DOGEUSDT","SOLUSDT","SEIUSDT","ETHUSDT"
 ]
 
+signals = []
 sent_alerts = {}
-last_heartbeat = time.time()
+
+state = {
+    "api_error_sent": False,
+    "bot_error_sent": False,
+    "last_heartbeat": time.time()
+}
 
 # =========================
 # FLASK
@@ -37,8 +40,12 @@ last_heartbeat = time.time()
 def home():
     return "Bot PRO Online 🚀"
 
-@app.route('/signals')
-def get_signals():
+@app.route('/dashboard')
+def dashboard():
+    return jsonify(signals[-50:])
+
+@app.route('/api/signals')
+def api_signals():
     return jsonify(signals[-50:])
 
 def run():
@@ -53,8 +60,17 @@ def keep_alive():
 # =========================
 def send(msg):
     try:
+        agora = datetime.now(timezone).strftime("%H:%M")
+
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.get(url, params={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+        requests.get(
+            url,
+            params={
+                "chat_id": CHAT_ID,
+                "text": f"{msg}\n🕒 {agora} (SC)"
+            },
+            timeout=10
+        )
     except Exception as e:
         print("Erro Telegram:", e)
 
@@ -64,23 +80,25 @@ def send(msg):
 def get_data(symbol):
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
-        response = requests.get(url, timeout=10)
-
-        if response.status_code != 200:
-            return None
-
-        data = response.json()
-
-        if 'result' not in data or 'list' not in data['result']:
-            return None
+        data = requests.get(url, timeout=10).json()
 
         df = pd.DataFrame(data['result']['list'])
         df = df.iloc[::-1]
         df.columns = ["time","open","high","low","close","volume","turnover"]
 
+        if state["api_error_sent"]:
+            send("✅ API normalizada")
+            state["api_error_sent"] = False
+
         return df.astype(float)
 
-    except:
+    except Exception as e:
+        print("Erro API:", e)
+
+        if not state["api_error_sent"]:
+            send("🚨 ERRO: API Bybit")
+            state["api_error_sent"] = True
+
         return None
 
 # =========================
@@ -106,8 +124,8 @@ def supertrend(df, period=10, factor=2):
 
         st.append(lower.iloc[i] if trend[i] else upper.iloc[i])
 
-    df['st'] = st
     df['trend'] = trend
+    df['st'] = st
 
     return df
 
@@ -115,82 +133,18 @@ def supertrend(df, period=10, factor=2):
 # INDICADORES
 # =========================
 def calculate(df):
-
     df['sma8'] = df['close'].rolling(8).mean()
     df['sma21'] = df['close'].rolling(21).mean()
-    df['slope8'] = df['sma8'] - df['sma8'].shift(1)
-
-    df['body'] = abs(df['close'] - df['open'])
-    df['range'] = df['high'] - df['low']
-    df['strong'] = df['body'] > (df['range'] * 0.6)
-
-    df['vol_mean'] = df['volume'].rolling(20).mean()
-    df['vol_ratio'] = df['volume'] / df['vol_mean']
-
-    df['lateral'] = abs(df['sma8'] - df['sma21']) < 0.0015
+    df['vol_ma'] = df['volume'].rolling(20).mean()
 
     return supertrend(df)
 
 # =========================
-# SCORE
-# =========================
-def calc_score(last):
-    score = 0
-
-    if last['strong']:
-        score += 30
-
-    if last['vol_ratio'] > 1:
-        score += 25
-
-    if abs(last['slope8']) > 0:
-        score += 20
-
-    if not last['lateral']:
-        score += 25
-
-    return min(score, 100)
-
-# =========================
-# MENSAGEM PREMIUM
-# =========================
-def format_msg(symbol, side, level, score, price):
-
-    agora = datetime.now(timezone).strftime("%H:%M")
-
-    emoji = "🟢📈" if side == "BUY" else "🔴📉"
-
-    nivel_emoji = {
-        "FORTE": "🔥",
-        "MEDIO": "⚡",
-        "LEVE": "🔵"
-    }
-
-    volume_txt = "Alto" if score > 80 else "Normal" if score > 60 else "Baixo"
-
-    return f"""{emoji}{nivel_emoji[level]} {side} {level}
-
-Ativo: {symbol}
-Preço: {price:.4f}
-Timeframe: 30m
-
-📊 Força: {score}%
-📦 Volume: {volume_txt}
-⚡ Estratégia: Rompimento + Tendência
-
-📊 Gráfico:
-https://www.tradingview.com/chart/?symbol=BYBIT:{symbol}
-
-🕒 {agora} (SC)
-"""
-
-# =========================
-# CHECK
+# ESTRATÉGIA (NÍVEIS + ROMPIMENTO REAL)
 # =========================
 def check(symbol):
-
     df_raw = get_data(symbol)
-    if df_raw is None or df_raw.empty or len(df_raw) < 50:
+    if df_raw is None or len(df_raw) < 50:
         return
 
     df = calculate(df_raw)
@@ -198,74 +152,92 @@ def check(symbol):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    score = calc_score(last)
-    price = last['close']
+    resistencia = df['high'].rolling(20).max().iloc[-2]
+    suporte = df['low'].rolling(20).min().iloc[-2]
 
-    # 🔥 FORTE
-    buy_forte = (
-        prev['close'] < prev['st'] and
-        last['close'] > last['st'] and
-        score >= 80
+    volume_forte = last['volume'] > last['vol_ma'] * 1.5
+
+    rompimento_compra = (
+        last['close'] > resistencia and
+        volume_forte and
+        last['trend'] == True
     )
 
-    sell_forte = (
-        prev['close'] > prev['st'] and
-        last['close'] < last['st'] and
-        score >= 80
+    rompimento_venda = (
+        last['close'] < suporte and
+        volume_forte and
+        last['trend'] == False
     )
 
-    # ⚡ MÉDIO
-    buy_medio = (
-        last['close'] > last['sma8'] > last['sma21'] and
-        score >= 60
-    )
+    preco = round(last['close'], 4)
+    agora = datetime.now(timezone).strftime("%H:%M")
 
-    sell_medio = (
-        last['close'] < last['sma8'] < last['sma21'] and
-        score >= 60
-    )
+    # =========================
+    # COMPRA
+    # =========================
+    if rompimento_compra and sent_alerts.get(symbol) != "buy":
 
-    # 🔵 LEVE
-    buy_leve = last['close'] > last['sma8']
-    sell_leve = last['close'] < last['sma8']
+        msg = f"""
+🟢📈 COMPRA FORTE (ROMPIMENTO)
 
-    # PRIORIDADE
-    if buy_forte and sent_alerts.get(symbol) != "buy_forte":
-        send(format_msg(symbol, "BUY", "FORTE", score, price))
-        signals.append({"symbol": symbol, "type": "BUY FORTE", "score": score})
-        sent_alerts[symbol] = "buy_forte"
+📊 {symbol}
+💰 Preço: {preco}
+⏱ TF: 30m
+🔥 Volume: Forte
+📍 Rompendo resistência
 
-    elif sell_forte and sent_alerts.get(symbol) != "sell_forte":
-        send(format_msg(symbol, "SELL", "FORTE", score, price))
-        signals.append({"symbol": symbol, "type": "SELL FORTE", "score": score})
-        sent_alerts[symbol] = "sell_forte"
+🎯 Entrada: {preco}
+🛑 Stop: {round(preco * 0.985,4)}
+🎯 Alvo: {round(preco * 1.03,4)}
+"""
 
-    elif buy_medio and sent_alerts.get(symbol) != "buy_medio":
-        send(format_msg(symbol, "BUY", "MEDIO", score, price))
-        signals.append({"symbol": symbol, "type": "BUY MEDIO", "score": score})
-        sent_alerts[symbol] = "buy_medio"
+        send(msg)
 
-    elif sell_medio and sent_alerts.get(symbol) != "sell_medio":
-        send(format_msg(symbol, "SELL", "MEDIO", score, price))
-        signals.append({"symbol": symbol, "type": "SELL MEDIO", "score": score})
-        sent_alerts[symbol] = "sell_medio"
+        signals.append({
+            "symbol": symbol,
+            "type": "BUY",
+            "price": preco,
+            "time": agora
+        })
 
-    elif buy_leve and sent_alerts.get(symbol) != "buy_leve":
-        send(format_msg(symbol, "BUY", "LEVE", score, price))
-        signals.append({"symbol": symbol, "type": "BUY LEVE", "score": score})
-        sent_alerts[symbol] = "buy_leve"
+        sent_alerts[symbol] = "buy"
 
-    elif sell_leve and sent_alerts.get(symbol) != "sell_leve":
-        send(format_msg(symbol, "SELL", "LEVE", score, price))
-        signals.append({"symbol": symbol, "type": "SELL LEVE", "score": score})
-        sent_alerts[symbol] = "sell_leve"
+    # =========================
+    # VENDA
+    # =========================
+    elif rompimento_venda and sent_alerts.get(symbol) != "sell":
+
+        msg = f"""
+🔴📉 VENDA FORTE (ROMPIMENTO)
+
+📊 {symbol}
+💰 Preço: {preco}
+⏱ TF: 30m
+🔥 Volume: Forte
+📍 Rompendo suporte
+
+🎯 Entrada: {preco}
+🛑 Stop: {round(preco * 1.015,4)}
+🎯 Alvo: {round(preco * 0.97,4)}
+"""
+
+        send(msg)
+
+        signals.append({
+            "symbol": symbol,
+            "type": "SELL",
+            "price": preco,
+            "time": agora
+        })
+
+        sent_alerts[symbol] = "sell"
 
 # =========================
 # LOOP
 # =========================
 if __name__ == "__main__":
     keep_alive()
-    time.sleep(5)
+    time.sleep(10)
 
     send("🤖 BOT PRO ATIVO")
 
@@ -275,11 +247,15 @@ if __name__ == "__main__":
                 check(s)
                 time.sleep(1)
 
-            if time.time() - last_heartbeat >= 14400:
+            if time.time() - state["last_heartbeat"] >= 14400:
                 send("📡 Monitoramento ativo")
-                last_heartbeat = time.time()
+                state["last_heartbeat"] = time.time()
 
         except Exception as e:
             print("Erro geral:", e)
+
+            if not state["bot_error_sent"]:
+                send("🚨 ERRO CRÍTICO NO BOT")
+                state["bot_error_sent"] = True
 
         time.sleep(60)
