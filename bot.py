@@ -32,7 +32,7 @@ state = {
 }
 
 # =========================
-# DASHBOARD HTML
+# DASHBOARD
 # =========================
 @app.route('/')
 def dashboard():
@@ -50,7 +50,7 @@ def dashboard():
         </style>
     </head>
     <body>
-        <h1>🚀 BOT PRO - SINAIS</h1>
+        <h1>🚀 BOT PRO - SUPERTREND M5</h1>
         <table id="tabela">
             <tr>
                 <th>Moeda</th>
@@ -122,11 +122,11 @@ def send(msg):
         pass
 
 # =========================
-# DADOS
+# DADOS (M5)
 # =========================
 def get_data(symbol):
     try:
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=30&limit=200"
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=5&limit=200"
         data = requests.get(url, timeout=10).json()
 
         df = pd.DataFrame(data['result']['list'])
@@ -167,15 +167,13 @@ def supertrend(df, period=10, factor=2):
     return df
 
 # =========================
-# INDICADORES
+# CALCULO
 # =========================
 def calculate(df):
-    df['sma8'] = df['close'].rolling(8).mean()
-    df['sma21'] = df['close'].rolling(21).mean()
     return supertrend(df)
 
 # =========================
-# CHECK (NÍVEIS + SUPERTREND)
+# ESTRATÉGIA (SUPERTREND ONLY)
 # =========================
 def check(symbol):
     df_raw = get_data(symbol)
@@ -190,54 +188,34 @@ def check(symbol):
     price = round(last['close'], 4)
     agora = datetime.now(timezone).strftime("%H:%M")
 
-    # 🔥 FORTE (ROMPIMENTO SUPERTREND)
-    buy_forte = prev['trend'] == False and last['trend'] == True
-    sell_forte = prev['trend'] == True and last['trend'] == False
+    buy_signal = prev['trend'] == False and last['trend'] == True
+    sell_signal = prev['trend'] == True and last['trend'] == False
 
-    # ⚡ MÉDIO
-    buy_medio = last['sma8'] > last['sma21']
-    sell_medio = last['sma8'] < last['sma21']
-
-    # 🔵 LEVE
-    buy_leve = last['close'] > last['sma8']
-    sell_leve = last['close'] < last['sma8']
-
-    # PRIORIDADE
-    if buy_forte and sent_alerts.get(symbol) != "buy_forte":
-        msg = f"🟢📈🔥 COMPRA FORTE\n{symbol}\nPreço: {price}"
+    if buy_signal and sent_alerts.get(symbol) != "buy":
+        msg = f"🟢📈 COMPRA SUPERTREND\n{symbol}\nPreço: {price}"
         send(msg)
-        signals.append({"symbol": symbol, "type": "BUY FORTE", "price": price, "time": agora})
-        sent_alerts[symbol] = "buy_forte"
 
-    elif sell_forte and sent_alerts.get(symbol) != "sell_forte":
-        msg = f"🔴📉🔥 VENDA FORTE\n{symbol}\nPreço: {price}"
-        send(msg)
-        signals.append({"symbol": symbol, "type": "SELL FORTE", "price": price, "time": agora})
-        sent_alerts[symbol] = "sell_forte"
+        signals.append({
+            "symbol": symbol,
+            "type": "BUY",
+            "price": price,
+            "time": agora
+        })
 
-    elif buy_medio and sent_alerts.get(symbol) != "buy_medio":
-        msg = f"🟢📈⚡ COMPRA MÉDIA\n{symbol}\nPreço: {price}"
-        send(msg)
-        signals.append({"symbol": symbol, "type": "BUY MEDIO", "price": price, "time": agora})
-        sent_alerts[symbol] = "buy_medio"
+        sent_alerts[symbol] = "buy"
 
-    elif sell_medio and sent_alerts.get(symbol) != "sell_medio":
-        msg = f"🔴📉⚡ VENDA MÉDIA\n{symbol}\nPreço: {price}"
+    elif sell_signal and sent_alerts.get(symbol) != "sell":
+        msg = f"🔴📉 VENDA SUPERTREND\n{symbol}\nPreço: {price}"
         send(msg)
-        signals.append({"symbol": symbol, "type": "SELL MEDIO", "price": price, "time": agora})
-        sent_alerts[symbol] = "sell_medio"
 
-    elif buy_leve and sent_alerts.get(symbol) != "buy_leve":
-        msg = f"🟢📈🔵 COMPRA LEVE\n{symbol}\nPreço: {price}"
-        send(msg)
-        signals.append({"symbol": symbol, "type": "BUY LEVE", "price": price, "time": agora})
-        sent_alerts[symbol] = "buy_leve"
+        signals.append({
+            "symbol": symbol,
+            "type": "SELL",
+            "price": price,
+            "time": agora
+        })
 
-    elif sell_leve and sent_alerts.get(symbol) != "sell_leve":
-        msg = f"🔴📉🔵 VENDA LEVE\n{symbol}\nPreço: {price}"
-        send(msg)
-        signals.append({"symbol": symbol, "type": "SELL LEVE", "price": price, "time": agora})
-        sent_alerts[symbol] = "sell_leve"
+        sent_alerts[symbol] = "sell"
 
 # =========================
 # LOOP
@@ -246,7 +224,7 @@ if __name__ == "__main__":
     keep_alive()
     time.sleep(5)
 
-    send("🤖 BOT PRO ATIVO")
+    send("🤖 BOT SUPERTREND M5 ATIVO")
 
     while True:
         try:
