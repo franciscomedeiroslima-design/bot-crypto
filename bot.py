@@ -28,21 +28,71 @@ signals = []
 sent_alerts = {}
 
 state = {
-    "api_error_sent": False,
-    "bot_error_sent": False,
     "last_heartbeat": time.time()
 }
 
 # =========================
-# FLASK
+# DASHBOARD HTML
 # =========================
 @app.route('/')
-def home():
-    return "Bot PRO Online 🚀"
-
-@app.route('/dashboard')
 def dashboard():
-    return jsonify(signals[-50:])
+    return """
+    <html>
+    <head>
+        <title>Bot PRO Dashboard</title>
+        <style>
+            body { background:#0f172a; color:white; font-family:Arial; }
+            h1 { text-align:center; }
+            table { width:100%; border-collapse:collapse; }
+            th, td { padding:10px; text-align:center; }
+            th { background:#1e293b; }
+            tr:nth-child(even) { background:#111827; }
+        </style>
+    </head>
+    <body>
+        <h1>🚀 BOT PRO - SINAIS</h1>
+        <table id="tabela">
+            <tr>
+                <th>Moeda</th>
+                <th>Tipo</th>
+                <th>Preço</th>
+                <th>Hora</th>
+            </tr>
+        </table>
+
+        <script>
+            async function load(){
+                let res = await fetch('/api/signals');
+                let data = await res.json();
+
+                let tabela = document.getElementById("tabela");
+                tabela.innerHTML = `
+                    <tr>
+                        <th>Moeda</th>
+                        <th>Tipo</th>
+                        <th>Preço</th>
+                        <th>Hora</th>
+                    </tr>
+                `;
+
+                data.reverse().forEach(s => {
+                    tabela.innerHTML += `
+                        <tr>
+                            <td>${s.symbol}</td>
+                            <td>${s.type}</td>
+                            <td>${s.price}</td>
+                            <td>${s.time}</td>
+                        </tr>
+                    `;
+                });
+            }
+
+            setInterval(load, 3000);
+            load();
+        </script>
+    </body>
+    </html>
+    """
 
 @app.route('/api/signals')
 def api_signals():
@@ -65,14 +115,11 @@ def send(msg):
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.get(
             url,
-            params={
-                "chat_id": CHAT_ID,
-                "text": f"{msg}\n🕒 {agora} (SC)"
-            },
+            params={"chat_id": CHAT_ID, "text": f"{msg}\n🕒 {agora}"},
             timeout=10
         )
-    except Exception as e:
-        print("Erro Telegram:", e)
+    except:
+        pass
 
 # =========================
 # DADOS
@@ -86,19 +133,9 @@ def get_data(symbol):
         df = df.iloc[::-1]
         df.columns = ["time","open","high","low","close","volume","turnover"]
 
-        if state["api_error_sent"]:
-            send("✅ API normalizada")
-            state["api_error_sent"] = False
-
         return df.astype(float)
 
-    except Exception as e:
-        print("Erro API:", e)
-
-        if not state["api_error_sent"]:
-            send("🚨 ERRO: API Bybit")
-            state["api_error_sent"] = True
-
+    except:
         return None
 
 # =========================
@@ -135,12 +172,10 @@ def supertrend(df, period=10, factor=2):
 def calculate(df):
     df['sma8'] = df['close'].rolling(8).mean()
     df['sma21'] = df['close'].rolling(21).mean()
-    df['vol_ma'] = df['volume'].rolling(20).mean()
-
     return supertrend(df)
 
 # =========================
-# ESTRATÉGIA (NÍVEIS + ROMPIMENTO REAL)
+# CHECK (NÍVEIS + SUPERTREND)
 # =========================
 def check(symbol):
     df_raw = get_data(symbol)
@@ -152,92 +187,64 @@ def check(symbol):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    resistencia = df['high'].rolling(20).max().iloc[-2]
-    suporte = df['low'].rolling(20).min().iloc[-2]
-
-    volume_forte = last['volume'] > last['vol_ma'] * 1.5
-
-    rompimento_compra = (
-        last['close'] > resistencia and
-        volume_forte and
-        last['trend'] == True
-    )
-
-    rompimento_venda = (
-        last['close'] < suporte and
-        volume_forte and
-        last['trend'] == False
-    )
-
-    preco = round(last['close'], 4)
+    price = round(last['close'], 4)
     agora = datetime.now(timezone).strftime("%H:%M")
 
-    # =========================
-    # COMPRA
-    # =========================
-    if rompimento_compra and sent_alerts.get(symbol) != "buy":
+    # 🔥 FORTE (ROMPIMENTO SUPERTREND)
+    buy_forte = prev['trend'] == False and last['trend'] == True
+    sell_forte = prev['trend'] == True and last['trend'] == False
 
-        msg = f"""
-🟢📈 COMPRA FORTE (ROMPIMENTO)
+    # ⚡ MÉDIO
+    buy_medio = last['sma8'] > last['sma21']
+    sell_medio = last['sma8'] < last['sma21']
 
-📊 {symbol}
-💰 Preço: {preco}
-⏱ TF: 30m
-🔥 Volume: Forte
-📍 Rompendo resistência
+    # 🔵 LEVE
+    buy_leve = last['close'] > last['sma8']
+    sell_leve = last['close'] < last['sma8']
 
-🎯 Entrada: {preco}
-🛑 Stop: {round(preco * 0.985,4)}
-🎯 Alvo: {round(preco * 1.03,4)}
-"""
-
+    # PRIORIDADE
+    if buy_forte and sent_alerts.get(symbol) != "buy_forte":
+        msg = f"🟢📈🔥 COMPRA FORTE\n{symbol}\nPreço: {price}"
         send(msg)
+        signals.append({"symbol": symbol, "type": "BUY FORTE", "price": price, "time": agora})
+        sent_alerts[symbol] = "buy_forte"
 
-        signals.append({
-            "symbol": symbol,
-            "type": "BUY",
-            "price": preco,
-            "time": agora
-        })
-
-        sent_alerts[symbol] = "buy"
-
-    # =========================
-    # VENDA
-    # =========================
-    elif rompimento_venda and sent_alerts.get(symbol) != "sell":
-
-        msg = f"""
-🔴📉 VENDA FORTE (ROMPIMENTO)
-
-📊 {symbol}
-💰 Preço: {preco}
-⏱ TF: 30m
-🔥 Volume: Forte
-📍 Rompendo suporte
-
-🎯 Entrada: {preco}
-🛑 Stop: {round(preco * 1.015,4)}
-🎯 Alvo: {round(preco * 0.97,4)}
-"""
-
+    elif sell_forte and sent_alerts.get(symbol) != "sell_forte":
+        msg = f"🔴📉🔥 VENDA FORTE\n{symbol}\nPreço: {price}"
         send(msg)
+        signals.append({"symbol": symbol, "type": "SELL FORTE", "price": price, "time": agora})
+        sent_alerts[symbol] = "sell_forte"
 
-        signals.append({
-            "symbol": symbol,
-            "type": "SELL",
-            "price": preco,
-            "time": agora
-        })
+    elif buy_medio and sent_alerts.get(symbol) != "buy_medio":
+        msg = f"🟢📈⚡ COMPRA MÉDIA\n{symbol}\nPreço: {price}"
+        send(msg)
+        signals.append({"symbol": symbol, "type": "BUY MEDIO", "price": price, "time": agora})
+        sent_alerts[symbol] = "buy_medio"
 
-        sent_alerts[symbol] = "sell"
+    elif sell_medio and sent_alerts.get(symbol) != "sell_medio":
+        msg = f"🔴📉⚡ VENDA MÉDIA\n{symbol}\nPreço: {price}"
+        send(msg)
+        signals.append({"symbol": symbol, "type": "SELL MEDIO", "price": price, "time": agora})
+        sent_alerts[symbol] = "sell_medio"
+
+    elif buy_leve and sent_alerts.get(symbol) != "buy_leve":
+        msg = f"🟢📈🔵 COMPRA LEVE\n{symbol}\nPreço: {price}"
+        send(msg)
+        signals.append({"symbol": symbol, "type": "BUY LEVE", "price": price, "time": agora})
+        sent_alerts[symbol] = "buy_leve"
+
+    elif sell_leve and sent_alerts.get(symbol) != "sell_leve":
+        msg = f"🔴📉🔵 VENDA LEVE\n{symbol}\nPreço: {price}"
+        send(msg)
+        signals.append({"symbol": symbol, "type": "SELL LEVE", "price": price, "time": agora})
+        sent_alerts[symbol] = "sell_leve"
 
 # =========================
 # LOOP
 # =========================
 if __name__ == "__main__":
     keep_alive()
-    time.sleep(10)
+    time.sleep(5)
 
     send("🤖 BOT PRO ATIVO")
 
@@ -252,10 +259,6 @@ if __name__ == "__main__":
                 state["last_heartbeat"] = time.time()
 
         except Exception as e:
-            print("Erro geral:", e)
-
-            if not state["bot_error_sent"]:
-                send("🚨 ERRO CRÍTICO NO BOT")
-                state["bot_error_sent"] = True
+            print("Erro:", e)
 
         time.sleep(60)
