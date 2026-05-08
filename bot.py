@@ -9,9 +9,9 @@ from threading import Thread
 
 app = Flask(__name__)
 
-# =========================
+# ==========================================
 # CONFIG
-# =========================
+# ==========================================
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
@@ -31,18 +31,21 @@ state = {
     "last_heartbeat": time.time()
 }
 
-# =========================
-# FLASK / DASHBOARD
-# =========================
+# ==========================================
+# DASHBOARD
+# ==========================================
 @app.route('/')
 def dashboard():
 
     return """
     <html>
+
     <head>
-        <title>BOT SUPERTREND PRO</title>
+
+        <title>BOT SNIPER PRO</title>
 
         <style>
+
             body{
                 background:#0f172a;
                 color:white;
@@ -84,12 +87,14 @@ def dashboard():
                 color:#ff4d4d;
                 font-weight:bold;
             }
+
         </style>
+
     </head>
 
     <body>
 
-        <h1>🚀 BOT SUPERTREND SNIPER M5</h1>
+        <h1>🚀 BOT PRÉ-VIRADA SUPERTREND</h1>
 
         <table id="tabela">
 
@@ -104,44 +109,48 @@ def dashboard():
 
         <script>
 
-        async function carregar(){
+            async function carregar(){
 
-            let req = await fetch('/api/signals');
-            let data = await req.json();
+                let req = await fetch('/api/signals');
 
-            let tabela = document.getElementById("tabela");
+                let data = await req.json();
 
-            tabela.innerHTML = `
-                <tr>
-                    <th>MOEDA</th>
-                    <th>SINAL</th>
-                    <th>PREÇO</th>
-                    <th>HORÁRIO</th>
-                </tr>
-            `;
+                let tabela = document.getElementById("tabela");
 
-            data.reverse().forEach(s => {
-
-                let classe = s.type == "BUY" ? "buy" : "sell";
-
-                tabela.innerHTML += `
+                tabela.innerHTML = `
                     <tr>
-                        <td>${s.symbol}</td>
-                        <td class="${classe}">${s.type}</td>
-                        <td>${s.price}</td>
-                        <td>${s.time}</td>
+                        <th>MOEDA</th>
+                        <th>SINAL</th>
+                        <th>PREÇO</th>
+                        <th>HORÁRIO</th>
                     </tr>
                 `;
-            });
-        }
 
-        setInterval(carregar, 3000);
+                data.reverse().forEach(s => {
 
-        carregar();
+                    let classe = s.type == "BUY" ? "buy" : "sell";
+
+                    tabela.innerHTML += `
+                        <tr>
+                            <td>${s.symbol}</td>
+                            <td class="${classe}">${s.type}</td>
+                            <td>${s.price}</td>
+                            <td>${s.time}</td>
+                        </tr>
+                    `;
+
+                });
+
+            }
+
+            setInterval(carregar, 3000);
+
+            carregar();
 
         </script>
 
     </body>
+
     </html>
     """
 
@@ -156,9 +165,9 @@ def run():
 def keep_alive():
     Thread(target=run).start()
 
-# =========================
+# ==========================================
 # TELEGRAM
-# =========================
+# ==========================================
 def send(msg):
 
     try:
@@ -177,25 +186,23 @@ def send(msg):
         )
 
     except Exception as e:
+
         print("Erro Telegram:", e)
 
-# =========================
-# DADOS BYBIT
-# =========================
+# ==========================================
+# BINANCE DATA
+# ==========================================
 def get_data(symbol):
 
     try:
 
-        # TIMEFRAME 5m
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=5&limit=200"
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=200"
 
-        response = requests.get(url, timeout=10)
+        data = requests.get(url, timeout=10).json()
 
-        data = response.json()
+        df = pd.DataFrame(data)
 
-        df = pd.DataFrame(data['result']['list'])
-
-        df = df.iloc[::-1]
+        df = df.iloc[:, 0:7]
 
         df.columns = [
             "time",
@@ -204,28 +211,28 @@ def get_data(symbol):
             "low",
             "close",
             "volume",
-            "turnover"
+            "close_time"
         ]
 
         return df.astype(float)
 
     except Exception as e:
 
-        print("Erro API:", e)
+        print("Erro Binance:", e)
 
         return None
 
-# =========================
-# SUPERTREND REAL
-# =========================
+# ==========================================
+# SUPERTREND
+# ==========================================
 def supertrend(df, period=10, factor=2):
 
     hl2 = (df['high'] + df['low']) / 2
 
     atr = (df['high'] - df['low']).rolling(period).mean()
 
-    upperband = hl2 + (factor * atr)
-    lowerband = hl2 - (factor * atr)
+    upperband = hl2 + factor * atr
+    lowerband = hl2 - factor * atr
 
     trend = [True]
     st = [lowerband.iloc[0]]
@@ -251,9 +258,9 @@ def supertrend(df, period=10, factor=2):
 
     return df
 
-# =========================
+# ==========================================
 # INDICADORES
-# =========================
+# ==========================================
 def calculate(df):
 
     df['sma8'] = df['close'].rolling(8).mean()
@@ -262,10 +269,10 @@ def calculate(df):
 
     return supertrend(df)
 
-# =========================
+# ==========================================
 # ESTRATÉGIA
-# VIRADA EXATA SUPERTREND
-# =========================
+# PRÉ-VIRADA SUPERTREND
+# ==========================================
 def check(symbol):
 
     df_raw = get_data(symbol)
@@ -282,11 +289,11 @@ def check(symbol):
 
     agora = datetime.now(timezone).strftime("%H:%M")
 
-    # =========================
+    # ==========================================
     # FILTROS
-    # =========================
+    # ==========================================
     volume_forte = (
-        last['volume'] > last['vol_ma'] * 1.3
+        last['volume'] > last['vol_ma'] * 1.5
     )
 
     corpo = abs(last['close'] - last['open'])
@@ -294,53 +301,71 @@ def check(symbol):
     range_candle = last['high'] - last['low']
 
     corpo_forte = (
-        corpo > (range_candle * 0.5)
+        corpo > range_candle * 0.5
     )
 
-    # =========================
-    # VIRADA EXATA
-    # =========================
-    buy_signal = (
+    distancia_st = abs(last['close'] - last['st']) / last['close']
+
+    perto_supertrend = (
+        distancia_st < 0.003
+    )
+
+    # ==========================================
+    # PRÉ-VIRADA COMPRA
+    # ==========================================
+    pre_buy = (
 
         prev['trend'] == False and
-        last['trend'] == True and
 
-        last['close'] > last['st'] and
+        last['close'] > last['open'] and
+
+        last['close'] > last['sma8'] and
+
+        perto_supertrend and
 
         volume_forte and
+
         corpo_forte
     )
 
-    sell_signal = (
+    # ==========================================
+    # PRÉ-VIRADA VENDA
+    # ==========================================
+    pre_sell = (
 
         prev['trend'] == True and
-        last['trend'] == False and
 
-        last['close'] < last['st'] and
+        last['close'] < last['open'] and
+
+        last['close'] < last['sma8'] and
+
+        perto_supertrend and
 
         volume_forte and
+
         corpo_forte
     )
 
-    # =========================
-    # COMPRA
-    # =========================
-    if buy_signal and sent_alerts.get(symbol) != "buy":
+    # ==========================================
+    # ALERTA COMPRA
+    # ==========================================
+    if pre_buy and sent_alerts.get(symbol) != "buy":
 
         stop = round(preco * 0.992, 4)
-        alvo = round(preco * 1.015, 4)
+
+        alvo = round(preco * 1.018, 4)
 
         msg = f"""
-🟢📈 VIRADA SUPERTREND
+🟢⚡ PRÉ-VIRADA SUPERTREND
 
 📊 {symbol}
 ⏱ TF: 5m
 💰 Preço: {preco}
 
-⚡ Supertrend virou para COMPRA
-🔥 Volume forte detectado
+🔥 Forte pressão compradora
+📈 Probabilidade de virada da tendência
 
-🎯 Entrada: {preco}
+🎯 Entrada antecipada: {preco}
 🛑 Stop: {stop}
 🎯 Alvo: {alvo}
 """
@@ -356,25 +381,26 @@ def check(symbol):
 
         sent_alerts[symbol] = "buy"
 
-    # =========================
-    # VENDA
-    # =========================
-    elif sell_signal and sent_alerts.get(symbol) != "sell":
+    # ==========================================
+    # ALERTA VENDA
+    # ==========================================
+    elif pre_sell and sent_alerts.get(symbol) != "sell":
 
         stop = round(preco * 1.008, 4)
-        alvo = round(preco * 0.985, 4)
+
+        alvo = round(preco * 0.982, 4)
 
         msg = f"""
-🔴📉 VIRADA SUPERTREND
+🔴⚡ PRÉ-VIRADA SUPERTREND
 
 📊 {symbol}
 ⏱ TF: 5m
 💰 Preço: {preco}
 
-⚡ Supertrend virou para VENDA
-🔥 Volume forte detectado
+🔥 Forte pressão vendedora
+📉 Probabilidade de reversão
 
-🎯 Entrada: {preco}
+🎯 Entrada antecipada: {preco}
 🛑 Stop: {stop}
 🎯 Alvo: {alvo}
 """
@@ -390,16 +416,16 @@ def check(symbol):
 
         sent_alerts[symbol] = "sell"
 
-# =========================
+# ==========================================
 # LOOP PRINCIPAL
-# =========================
+# ==========================================
 if __name__ == "__main__":
 
     keep_alive()
 
     time.sleep(5)
 
-    send("🤖 BOT SUPERTREND SNIPER M5 ATIVO")
+    send("🤖 BOT PRÉ-VIRADA SUPERTREND ATIVO")
 
     while True:
 
@@ -422,5 +448,5 @@ if __name__ == "__main__":
 
             print("Erro geral:", e)
 
-        # verifica a cada 60s
+        # verifica a cada 60 segundos
         time.sleep(60)
