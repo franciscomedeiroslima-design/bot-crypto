@@ -1,6 +1,5 @@
+flask
 requests
 pandas
-numpy
-flask
-gunicorn
-pytz
+python-binance
+pandas-ta
