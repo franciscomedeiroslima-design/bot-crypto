@@ -2,37 +2,52 @@ import os
 import time
 import requests
 import pandas as pd
-import pandas_ta as ta
-
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
 from flask import Flask, jsonify
 from threading import Thread
-
 from binance.client import Client
 
-# =========================================================
+# ==========================================
 # FLASK
-# =========================================================
+# ==========================================
 app = Flask(__name__)
 
-# =========================================================
-# CONFIG
-# =========================================================
-BINANCE_KEY = os.environ.get("BINANCE_KEY")
-BINANCE_SECRET = os.environ.get("BINANCE_SECRET")
+@app.route("/")
+def home():
+    return "🚀 BOT SUPERTREND REALTIME ONLINE"
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+@app.route("/dashboard")
+def dashboard():
+    return jsonify(signals[-100:])
+
+@app.route("/api/signals")
+def api_signals():
+    return jsonify(signals[-100:])
+
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+def keep_alive():
+    Thread(target=run).start()
+
+# ==========================================
+# CONFIG
+# ==========================================
+BINANCE_KEY = os.getenv("BINANCE_KEY")
+BINANCE_SECRET = os.getenv("BINANCE_SECRET")
+
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 client = Client(BINANCE_KEY, BINANCE_SECRET)
 
 timezone = ZoneInfo("America/Sao_Paulo")
 
-# =========================================================
+# ==========================================
 # MOEDAS
-# =========================================================
+# ==========================================
 symbols = [
     "DOTUSDT",
     "IMXUSDT",
@@ -56,15 +71,13 @@ symbols = [
     "DOGEUSDT",
     "SOLUSDT",
     "SEIUSDT",
-    "ETHUSDT",
-    "ADAUSDT"
+    "ETHUSDT"
 ]
 
-# =========================================================
-# CONTROLE
-# =========================================================
+# ==========================================
+# ESTADO
+# ==========================================
 signals = []
-
 sent_alerts = {}
 
 state = {
@@ -73,35 +86,12 @@ state = {
     "last_heartbeat": time.time()
 }
 
-# =========================================================
-# FLASK ROUTES
-# =========================================================
-@app.route('/')
-def home():
-    return "🤖 BOT SUPERtrend ONLINE"
-
-@app.route('/dashboard')
-def dashboard():
-    return jsonify(signals[-50:])
-
-@app.route('/api/signals')
-def api_signals():
-    return jsonify(signals[-50:])
-
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    Thread(target=run).start()
-
-# =========================================================
+# ==========================================
 # TELEGRAM
-# =========================================================
+# ==========================================
 def send(msg):
     try:
-
-        agora = datetime.now(timezone).strftime("%H:%M")
+        agora = datetime.now(timezone).strftime("%H:%M:%S")
 
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
@@ -109,7 +99,7 @@ def send(msg):
             url,
             json={
                 "chat_id": CHAT_ID,
-                "text": f"{msg}\n🕒 {agora} (SC)"
+                "text": f"{msg}\n\n🕒 {agora} (SC)"
             },
             timeout=10
         )
@@ -117,13 +107,12 @@ def send(msg):
     except Exception as e:
         print("Erro Telegram:", e)
 
-# =========================================================
-# BINANCE DATA
-# =========================================================
+# ==========================================
+# DADOS BINANCE REALTIME
+# ==========================================
 def get_data(symbol):
 
     try:
-
         klines = client.get_klines(
             symbol=symbol,
             interval=Client.KLINE_INTERVAL_5MINUTE,
@@ -131,25 +120,15 @@ def get_data(symbol):
         )
 
         df = pd.DataFrame(klines, columns=[
-            'time',
-            'open',
-            'high',
-            'low',
-            'close',
-            'volume',
-            'close_time',
-            'qav',
-            'num_trades',
-            'taker_base',
-            'taker_quote',
-            'ignore'
+            "time","open","high","low","close","volume",
+            "close_time","qav","num_trades",
+            "taker_base","taker_quote","ignore"
         ])
 
-        df['open'] = pd.to_numeric(df['open'])
-        df['high'] = pd.to_numeric(df['high'])
-        df['low'] = pd.to_numeric(df['low'])
-        df['close'] = pd.to_numeric(df['close'])
-        df['volume'] = pd.to_numeric(df['volume'])
+        df = df[["time","open","high","low","close","volume"]]
+
+        for col in ["open","high","low","close","volume"]:
+            df[col] = pd.to_numeric(df[col])
 
         if state["api_error_sent"]:
             send("✅ API Binance normalizada")
@@ -159,7 +138,7 @@ def get_data(symbol):
 
     except Exception as e:
 
-        print("Erro Binance:", e)
+        print("Erro API Binance:", e)
 
         if not state["api_error_sent"]:
             send("🚨 ERRO API BINANCE")
@@ -167,158 +146,179 @@ def get_data(symbol):
 
         return None
 
-# =========================================================
+# ==========================================
 # SUPERTREND
-# =========================================================
-def calculate(df):
+# ==========================================
+def calculate_supertrend(df, period=10, multiplier=2):
 
-    st = ta.supertrend(
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        length=10,
-        multiplier=2
+    hl2 = (df["high"] + df["low"]) / 2
+
+    df["tr"] = (
+        df[["high", "close"]].max(axis=1) -
+        df[["low", "close"]].min(axis=1)
     )
 
-    df['supertrend'] = st['SUPERT_10_2.0']
-    df['direction'] = st['SUPERTd_10_2.0']
+    atr = df["tr"].rolling(period).mean()
+
+    upperband = hl2 + (multiplier * atr)
+    lowerband = hl2 - (multiplier * atr)
+
+    trend = [True]
+    supertrend = [lowerband.iloc[0]]
+
+    for i in range(1, len(df)):
+
+        if df["close"].iloc[i] > supertrend[i - 1]:
+            trend.append(True)
+
+        elif df["close"].iloc[i] < supertrend[i - 1]:
+            trend.append(False)
+
+        else:
+            trend.append(trend[i - 1])
+
+        if trend[i]:
+            supertrend.append(lowerband.iloc[i])
+        else:
+            supertrend.append(upperband.iloc[i])
+
+    df["trend"] = trend
+    df["supertrend"] = supertrend
 
     return df
 
-# =========================================================
+# ==========================================
 # ESTRATÉGIA
-# ANTECIPAÇÃO DA VIRADA DA SUPERTREND
-# =========================================================
+# DETECTAR VIRADA EXATA DA SUPERTREND
+# ==========================================
 def check(symbol):
 
-    df_raw = get_data(symbol)
+    df = get_data(symbol)
 
-    if df_raw is None or len(df_raw) < 50:
+    if df is None or len(df) < 50:
         return
 
-    df = calculate(df_raw)
+    df = calculate_supertrend(df)
 
     last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-    close = float(last['close'])
-    st = float(last['supertrend'])
+    preco = round(last["close"], 4)
 
-    direction = int(last['direction'])
-
-    # =====================================================
-    # DISTÂNCIA ENTRE PREÇO E SUPERTREND
-    # =====================================================
-    dist = abs(close - st) / close
-
-    preco = round(close, 4)
-
-    # =====================================================
-    # COMPRA ANTECIPADA
-    # =====================================================
-    compra_antecipada = (
-        direction == -1 and
-        close >= st * 0.997
+    # ==========================================
+    # VIRADA REAL DA SUPERTREND
+    # ==========================================
+    virou_compra = (
+        prev["trend"] == False and
+        last["trend"] == True
     )
 
-    # =====================================================
-    # VENDA ANTECIPADA
-    # =====================================================
-    venda_antecipada = (
-        direction == 1 and
-        close <= st * 1.003
+    virou_venda = (
+        prev["trend"] == True and
+        last["trend"] == False
     )
 
-    # =====================================================
-    # ALERTA COMPRA
-    # =====================================================
-    if compra_antecipada:
+    distancia = abs(
+        (last["close"] - last["supertrend"])
+        / last["close"]
+    ) * 100
 
-        last_signal = sent_alerts.get(symbol)
+    # ==========================================
+    # COMPRA
+    # ==========================================
+    if virou_compra and sent_alerts.get(symbol) != "buy":
 
-        if last_signal != "buy":
-
-            msg = f"""
-🟢⚡ POSSÍVEL VIRADA SUPERTREND
-
-📊 {symbol}
-💰 Preço: {preco}
-⏱ Timeframe: 5m
-
-📍 Preço atacando a Supertrend
-📈 Possível COMPRA iminente
-
-🎯 Entrada: {preco}
-🛑 Stop: {round(preco * 0.992, 4)}
-🎯 Alvo: {round(preco * 1.015, 4)}
-
-🔥 ALERTA ANTECIPADO
-"""
-
-            send(msg)
-
-            signals.append({
-                "symbol": symbol,
-                "type": "BUY",
-                "price": preco,
-                "time": datetime.now(timezone).strftime("%H:%M")
-            })
-
-            sent_alerts[symbol] = "buy"
-
-    # =====================================================
-    # ALERTA VENDA
-    # =====================================================
-    elif venda_antecipada:
-
-        last_signal = sent_alerts.get(symbol)
-
-        if last_signal != "sell":
-
-            msg = f"""
-🔴⚡ POSSÍVEL VIRADA SUPERTREND
+        msg = f"""
+🟢⬆️ VIRADA SUPERTREND COMPRA
 
 📊 {symbol}
-💰 Preço: {preco}
-⏱ Timeframe: 5m
+⏱ TIMEFRAME: 5m
 
-📍 Preço perdendo a Supertrend
-📉 Possível VENDA iminente
+💰 PREÇO: {preco}
 
-🎯 Entrada: {preco}
-🛑 Stop: {round(preco * 1.008, 4)}
-🎯 Alvo: {round(preco * 0.985, 4)}
+📈 SUPERTREND VIROU PARA ALTA
 
-🔥 ALERTA ANTECIPADO
+📍 DISTÂNCIA ST:
+{round(distancia,2)}%
+
+🎯 Entrada:
+{preco}
+
+🛑 Stop:
+{round(last['supertrend'],4)}
+
+🔥 ALERTA EM TEMPO REAL
 """
 
-            send(msg)
+        send(msg)
 
-            signals.append({
-                "symbol": symbol,
-                "type": "SELL",
-                "price": preco,
-                "time": datetime.now(timezone).strftime("%H:%M")
-            })
+        signals.append({
+            "symbol": symbol,
+            "type": "BUY",
+            "price": preco,
+            "time": datetime.now(timezone).strftime("%H:%M:%S")
+        })
 
-            sent_alerts[symbol] = "sell"
+        sent_alerts[symbol] = "buy"
 
-    # =====================================================
-    # RESET ALERTA
-    # =====================================================
-    else:
+    # ==========================================
+    # VENDA
+    # ==========================================
+    elif virou_venda and sent_alerts.get(symbol) != "sell":
 
-        sent_alerts[symbol] = None
+        msg = f"""
+🔴⬇️ VIRADA SUPERTREND VENDA
 
-# =========================================================
-# LOOP PRINCIPAL
-# =========================================================
+📊 {symbol}
+⏱ TIMEFRAME: 5m
+
+💰 PREÇO: {preco}
+
+📉 SUPERTREND VIROU PARA BAIXA
+
+📍 DISTÂNCIA ST:
+{round(distancia,2)}%
+
+🎯 Entrada:
+{preco}
+
+🛑 Stop:
+{round(last['supertrend'],4)}
+
+🔥 ALERTA EM TEMPO REAL
+"""
+
+        send(msg)
+
+        signals.append({
+            "symbol": symbol,
+            "type": "SELL",
+            "price": preco,
+            "time": datetime.now(timezone).strftime("%H:%M:%S")
+        })
+
+        sent_alerts[symbol] = "sell"
+
+# ==========================================
+# LOOP REALTIME
+# ==========================================
 if __name__ == "__main__":
 
     keep_alive()
 
     time.sleep(5)
 
-    send("🤖 BOT SUPERTREND ANTECIPADO ONLINE")
+    send("""
+🤖 BOT SUPERTREND REALTIME ATIVO
+
+⚡ Estratégia:
+Virada exata da Supertrend
+
+⏱ Timeframe:
+5 minutos
+
+📡 Monitoramento em tempo real iniciado
+""")
 
     while True:
 
@@ -328,14 +328,24 @@ if __name__ == "__main__":
 
                 check(symbol)
 
-                time.sleep(1)
+                # PEQUENO DELAY
+                time.sleep(0.5)
 
             # HEARTBEAT
             if time.time() - state["last_heartbeat"] >= 14400:
 
-                send("📡 BOT ONLINE E MONITORANDO")
+                send("""
+📡 BOT ONLINE
+
+✅ Monitorando mercado
+✅ Supertrend ativa
+✅ Tempo real funcionando
+""")
 
                 state["last_heartbeat"] = time.time()
+
+            # LOOP RÁPIDO
+            time.sleep(5)
 
         except Exception as e:
 
@@ -343,8 +353,12 @@ if __name__ == "__main__":
 
             if not state["bot_error_sent"]:
 
-                send(f"🚨 ERRO CRÍTICO NO BOT\n{str(e)}")
+                send(f"""
+🚨 ERRO CRÍTICO NO BOT
+
+{str(e)}
+""")
 
                 state["bot_error_sent"] = True
 
-        time.sleep(15)
+            time.sleep(10)
