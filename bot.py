@@ -2,10 +2,13 @@ import os
 import time
 import requests
 import pandas as pd
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
 from flask import Flask, jsonify
 from threading import Thread
+
 from binance.client import Client
 
 # ==========================================
@@ -27,10 +30,21 @@ def api_signals():
 
 def run():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False
+    )
 
 def keep_alive():
-    Thread(target=run).start()
+
+    server = Thread(target=run)
+
+    server.daemon = True
+
+    server.start()
 
 # ==========================================
 # CONFIG
@@ -78,6 +92,7 @@ symbols = [
 # ESTADO
 # ==========================================
 signals = []
+
 sent_alerts = {}
 
 state = {
@@ -90,7 +105,9 @@ state = {
 # TELEGRAM
 # ==========================================
 def send(msg):
+
     try:
+
         agora = datetime.now(timezone).strftime("%H:%M:%S")
 
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -105,14 +122,16 @@ def send(msg):
         )
 
     except Exception as e:
+
         print("Erro Telegram:", e)
 
 # ==========================================
-# DADOS BINANCE REALTIME
+# BINANCE
 # ==========================================
 def get_data(symbol):
 
     try:
+
         klines = client.get_klines(
             symbol=symbol,
             interval=Client.KLINE_INTERVAL_5MINUTE,
@@ -120,28 +139,58 @@ def get_data(symbol):
         )
 
         df = pd.DataFrame(klines, columns=[
-            "time","open","high","low","close","volume",
-            "close_time","qav","num_trades",
-            "taker_base","taker_quote","ignore"
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "qav",
+            "num_trades",
+            "taker_base",
+            "taker_quote",
+            "ignore"
         ])
 
-        df = df[["time","open","high","low","close","volume"]]
+        df = df[[
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]]
 
-        for col in ["open","high","low","close","volume"]:
+        for col in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]:
             df[col] = pd.to_numeric(df[col])
 
         if state["api_error_sent"]:
+
             send("✅ API Binance normalizada")
+
             state["api_error_sent"] = False
 
         return df
 
     except Exception as e:
 
-        print("Erro API Binance:", e)
+        print("Erro Binance:", e)
 
         if not state["api_error_sent"]:
-            send("🚨 ERRO API BINANCE")
+
+            send(f"""
+🚨 ERRO API BINANCE
+
+{str(e)}
+""")
+
             state["api_error_sent"] = True
 
         return None
@@ -149,12 +198,17 @@ def get_data(symbol):
 # ==========================================
 # SUPERTREND
 # ==========================================
-def calculate_supertrend(df, period=10, multiplier=2):
+def calculate_supertrend(
+    df,
+    period=10,
+    multiplier=2
+):
 
     hl2 = (df["high"] + df["low"]) / 2
 
     df["tr"] = (
-        df[["high", "close"]].max(axis=1) -
+        df[["high", "close"]].max(axis=1)
+        -
         df[["low", "close"]].min(axis=1)
     )
 
@@ -164,22 +218,29 @@ def calculate_supertrend(df, period=10, multiplier=2):
     lowerband = hl2 - (multiplier * atr)
 
     trend = [True]
+
     supertrend = [lowerband.iloc[0]]
 
     for i in range(1, len(df)):
 
         if df["close"].iloc[i] > supertrend[i - 1]:
+
             trend.append(True)
 
         elif df["close"].iloc[i] < supertrend[i - 1]:
+
             trend.append(False)
 
         else:
+
             trend.append(trend[i - 1])
 
         if trend[i]:
+
             supertrend.append(lowerband.iloc[i])
+
         else:
+
             supertrend.append(upperband.iloc[i])
 
     df["trend"] = trend
@@ -189,13 +250,15 @@ def calculate_supertrend(df, period=10, multiplier=2):
 
 # ==========================================
 # ESTRATÉGIA
-# DETECTAR VIRADA EXATA DA SUPERTREND
 # ==========================================
 def check(symbol):
 
     df = get_data(symbol)
 
-    if df is None or len(df) < 50:
+    if df is None:
+        return
+
+    if len(df) < 50:
         return
 
     df = calculate_supertrend(df)
@@ -206,22 +269,31 @@ def check(symbol):
     preco = round(last["close"], 4)
 
     # ==========================================
-    # VIRADA REAL DA SUPERTREND
+    # VIRADA EXATA
     # ==========================================
     virou_compra = (
-        prev["trend"] == False and
+        prev["trend"] == False
+        and
         last["trend"] == True
     )
 
     virou_venda = (
-        prev["trend"] == True and
+        prev["trend"] == True
+        and
         last["trend"] == False
     )
 
     distancia = abs(
-        (last["close"] - last["supertrend"])
-        / last["close"]
+        (
+            last["close"]
+            -
+            last["supertrend"]
+        )
+        /
+        last["close"]
     ) * 100
+
+    agora = datetime.now(timezone).strftime("%H:%M:%S")
 
     # ==========================================
     # COMPRA
@@ -234,7 +306,8 @@ def check(symbol):
 📊 {symbol}
 ⏱ TIMEFRAME: 5m
 
-💰 PREÇO: {preco}
+💰 PREÇO:
+{preco}
 
 📈 SUPERTREND VIROU PARA ALTA
 
@@ -256,7 +329,7 @@ def check(symbol):
             "symbol": symbol,
             "type": "BUY",
             "price": preco,
-            "time": datetime.now(timezone).strftime("%H:%M:%S")
+            "time": agora
         })
 
         sent_alerts[symbol] = "buy"
@@ -272,7 +345,8 @@ def check(symbol):
 📊 {symbol}
 ⏱ TIMEFRAME: 5m
 
-💰 PREÇO: {preco}
+💰 PREÇO:
+{preco}
 
 📉 SUPERTREND VIROU PARA BAIXA
 
@@ -294,21 +368,23 @@ def check(symbol):
             "symbol": symbol,
             "type": "SELL",
             "price": preco,
-            "time": datetime.now(timezone).strftime("%H:%M:%S")
+            "time": agora
         })
 
         sent_alerts[symbol] = "sell"
 
 # ==========================================
-# LOOP REALTIME
+# MAIN
 # ==========================================
 if __name__ == "__main__":
 
-    keep_alive()
+    try:
 
-    time.sleep(5)
+        keep_alive()
 
-    send("""
+        time.sleep(5)
+
+        send("""
 🤖 BOT SUPERTREND REALTIME ATIVO
 
 ⚡ Estratégia:
@@ -320,21 +396,21 @@ Virada exata da Supertrend
 📡 Monitoramento em tempo real iniciado
 """)
 
-    while True:
+        while True:
 
-        try:
+            try:
 
-            for symbol in symbols:
+                for symbol in symbols:
 
-                check(symbol)
+                    check(symbol)
 
-                # PEQUENO DELAY
-                time.sleep(0.5)
+                    # evita rate limit
+                    time.sleep(1)
 
-            # HEARTBEAT
-            if time.time() - state["last_heartbeat"] >= 14400:
+                # heartbeat
+                if time.time() - state["last_heartbeat"] >= 14400:
 
-                send("""
+                    send("""
 📡 BOT ONLINE
 
 ✅ Monitorando mercado
@@ -342,23 +418,29 @@ Virada exata da Supertrend
 ✅ Tempo real funcionando
 """)
 
-                state["last_heartbeat"] = time.time()
+                    state["last_heartbeat"] = time.time()
 
-            # LOOP RÁPIDO
-            time.sleep(5)
+                # loop realtime
+                time.sleep(3)
 
-        except Exception as e:
+            except Exception as e:
 
-            print("Erro geral:", e)
-
-            if not state["bot_error_sent"]:
+                print("Erro LOOP:", e)
 
                 send(f"""
-🚨 ERRO CRÍTICO NO BOT
+🚨 ERRO LOOP
 
 {str(e)}
 """)
 
-                state["bot_error_sent"] = True
+                time.sleep(10)
 
-            time.sleep(10)
+    except Exception as e:
+
+        print("ERRO FATAL:", e)
+
+        send(f"""
+🚨 ERRO FATAL BOT
+
+{str(e)}
+""")
