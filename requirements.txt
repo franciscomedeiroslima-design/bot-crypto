@@ -2,4 +2,5 @@ flask
 requests
 pandas
 python-binance
+websocket-client
 gunicorn
