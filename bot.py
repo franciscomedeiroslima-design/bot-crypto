@@ -1,14 +1,13 @@
-# BOT SUPERTREND PROFISSIONAL — WEBSOCKET REALTIME
-
-```python
 import os
 import json
 import time
 import requests
 import pandas as pd
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from threading import Thread
+
 from flask import Flask, jsonify
 from websocket import WebSocketApp
 from binance.client import Client
@@ -20,7 +19,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🚀 BOT SUPERTREND WEBSOCKET ONLINE"
+    return "🚀 BOT EMA CROSS REALTIME ONLINE"
 
 @app.route("/dashboard")
 def dashboard():
@@ -30,11 +29,9 @@ def dashboard():
 def api_signals():
     return jsonify(signals[-100:])
 
-
 def run():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
 
 def keep_alive():
     Thread(target=run).start()
@@ -60,13 +57,17 @@ symbols = [
     "ethusdt",
     "solusdt",
     "dogeusdt",
-    "adausdt",
-    "atomusdt",
-    "avaxusdt",
     "dotusdt",
+    "avaxusdt",
+    "atomusdt",
     "aptusdt",
     "ondousdt",
-    "seiusdt"
+    "seiUsdt".lower(),
+    "imxusdt",
+    "galausdt",
+    "algoUsdt".lower(),
+    "jasmyusdt",
+    "tonusdt"
 ]
 
 # ==========================================
@@ -76,11 +77,19 @@ signals = []
 sent_alerts = {}
 market_data = {}
 
+state = {
+    "last_heartbeat": time.time(),
+    "api_error_sent": False,
+    "bot_error_sent": False
+}
+
 # ==========================================
 # TELEGRAM
 # ==========================================
 def send(msg):
+
     try:
+
         agora = datetime.now(timezone).strftime("%H:%M:%S")
 
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -98,7 +107,7 @@ def send(msg):
         print("Erro Telegram:", e)
 
 # ==========================================
-# HISTÓRICO INICIAL
+# HISTÓRICO
 # ==========================================
 def load_history(symbol):
 
@@ -114,7 +123,14 @@ def load_history(symbol):
         "taker_base","taker_quote","ignore"
     ])
 
-    df = df[["time","open","high","low","close","volume"]]
+    df = df[[
+        "time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+    ]]
 
     for col in ["open","high","low","close","volume"]:
         df[col] = pd.to_numeric(df[col])
@@ -122,148 +138,164 @@ def load_history(symbol):
     return df
 
 # ==========================================
-# SUPERTREND
+# EMA
 # ==========================================
-def calculate_supertrend(df, period=10, multiplier=2):
+def calculate_ema(df):
 
-    hl2 = (df['high'] + df['low']) / 2
-
-    df['tr'] = (
-        df[['high', 'close']].max(axis=1) -
-        df[['low', 'close']].min(axis=1)
+    df["ema8"] = (
+        df["close"]
+        .ewm(span=8, adjust=False)
+        .mean()
     )
 
-    atr = df['tr'].rolling(period).mean()
-
-    upperband = hl2 + (multiplier * atr)
-    lowerband = hl2 - (multiplier * atr)
-
-    trend = [True]
-    st = [lowerband.iloc[0]]
-
-    for i in range(1, len(df)):
-
-        if df['close'].iloc[i] > st[i - 1]:
-            trend.append(True)
-
-        elif df['close'].iloc[i] < st[i - 1]:
-            trend.append(False)
-
-        else:
-            trend.append(trend[i - 1])
-
-        if trend[i]:
-            st.append(lowerband.iloc[i])
-        else:
-            st.append(upperband.iloc[i])
-
-    df['trend'] = trend
-    df['supertrend'] = st
+    df["ema21"] = (
+        df["close"]
+        .ewm(span=21, adjust=False)
+        .mean()
+    )
 
     return df
 
 # ==========================================
-# SCORE DE FORÇA
+# SCORE
 # ==========================================
 def calculate_score(df):
 
     last = df.iloc[-1]
 
-    score = 0
-
-    body = abs(last['close'] - last['open'])
-    candle_size = last['high'] - last['low']
-
-    if candle_size > 0:
-        body_percent = (body / candle_size) * 100
-    else:
-        body_percent = 0
-
-    # FORÇA DO CANDLE
-    if body_percent > 70:
-        score += 35
-
-    elif body_percent > 50:
-        score += 20
-
-    # VOLUME
-    vol_ma = df['volume'].rolling(20).mean().iloc[-1]
-
-    if last['volume'] > vol_ma * 2:
-        score += 35
-
-    elif last['volume'] > vol_ma * 1.5:
-        score += 20
-
-    # DISTÂNCIA DA ST
-    dist = abs(
-        (last['close'] - last['supertrend']) /
-        last['close']
+    distancia = abs(
+        (last["ema8"] - last["ema21"])
+        / last["ema21"]
     ) * 100
 
-    if dist > 1:
-        score += 20
+    volume_ma = (
+        df["volume"]
+        .rolling(20)
+        .mean()
+        .iloc[-1]
+    )
+
+    score = 0
+
+    # ==========================================
+    # DISTÂNCIA ENTRE EMAs
+    # ==========================================
+    if distancia > 0.30:
+        score += 40
+
+    elif distancia > 0.15:
+        score += 25
 
     else:
         score += 10
 
-    # MOMENTUM
-    if abs(last['close'] - df['close'].iloc[-2]) > 0:
+    # ==========================================
+    # VOLUME
+    # ==========================================
+    if last["volume"] > volume_ma * 2:
+        score += 40
+
+    elif last["volume"] > volume_ma * 1.5:
+        score += 25
+
+    else:
         score += 10
 
-    return min(score, 100)
+    # ==========================================
+    # FORÇA DO CANDLE
+    # ==========================================
+    candle = abs(
+        last["close"] - last["open"]
+    )
+
+    range_candle = (
+        last["high"] - last["low"]
+    )
+
+    if range_candle > 0:
+
+        body_percent = (
+            candle / range_candle
+        ) * 100
+
+        if body_percent > 70:
+            score += 20
+
+        elif body_percent > 50:
+            score += 10
+
+    return min(round(score), 100)
 
 # ==========================================
-# ALERTAS
+# DETECÇÃO EMA CROSS REALTIME
 # ==========================================
 def process_signal(symbol, df):
 
-    df = calculate_supertrend(df)
+    df = calculate_ema(df)
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    virou_compra = (
-        prev['trend'] == False and
-        last['trend'] == True
+    preco = round(last["close"], 4)
+
+    # ==========================================
+    # DISTÂNCIA ENTRE EMAs
+    # ==========================================
+    dist_prev = (
+        prev["ema8"] - prev["ema21"]
     )
 
-    virou_venda = (
-        prev['trend'] == True and
-        last['trend'] == False
+    dist_now = (
+        last["ema8"] - last["ema21"]
     )
-
-    score = calculate_score(df)
-
-    preco = round(last['close'], 4)
 
     # ==========================================
     # COMPRA
     # ==========================================
-    if virou_compra and sent_alerts.get(symbol) != 'buy':
+    cruzando_compra = (
+        dist_prev < 0 and
+        dist_now > 0
+    )
+
+    # ==========================================
+    # VENDA
+    # ==========================================
+    cruzando_venda = (
+        dist_prev > 0 and
+        dist_now < 0
+    )
+
+    score = calculate_score(df)
+
+    # ==========================================
+    # ALERTA COMPRA
+    # ==========================================
+    if cruzando_compra and sent_alerts.get(symbol) != "buy":
+
+        distancia = round(
+            abs(dist_now),
+            5
+        )
 
         msg = f"""
-🟢⬆️ VIRADA SUPERTREND REALTIME
+🟢⬆️ CRUZAMENTO EMA REALTIME
 
 📊 {symbol.upper()}
-⏱ TIMEFRAME: 5m
+⏱ TF: 5m
 
-💰 PREÇO:
-{preco}
-
-📈 SUPERTREND VIROU PARA ALTA
+⚡ EMA 8 cruzou EMA 21 PARA CIMA
 
 🔥 FORÇA:
 {score}%
 
-🎯 Entrada:
+📍 Distância EMAs:
+{distancia}
+
+💰 PREÇO:
 {preco}
 
-🛑 Stop:
-{round(last['supertrend'],4)}
-
+📡 WEBSOCKET REALTIME
 ⚡ DETECÇÃO INTRABAR
-⚡ WEBSOCKET REALTIME
 """
 
         send(msg)
@@ -271,40 +303,42 @@ def process_signal(symbol, df):
         signals.append({
             "symbol": symbol.upper(),
             "type": "BUY",
-            "price": preco,
             "score": score,
+            "price": preco,
             "time": datetime.now(timezone).strftime("%H:%M:%S")
         })
 
-        sent_alerts[symbol] = 'buy'
+        sent_alerts[symbol] = "buy"
 
     # ==========================================
-    # VENDA
+    # ALERTA VENDA
     # ==========================================
-    elif virou_venda and sent_alerts.get(symbol) != 'sell':
+    elif cruzando_venda and sent_alerts.get(symbol) != "sell":
+
+        distancia = round(
+            abs(dist_now),
+            5
+        )
 
         msg = f"""
-🔴⬇️ VIRADA SUPERTREND REALTIME
+🔴⬇️ CRUZAMENTO EMA REALTIME
 
 📊 {symbol.upper()}
-⏱ TIMEFRAME: 5m
+⏱ TF: 5m
 
-💰 PREÇO:
-{preco}
-
-📉 SUPERTREND VIROU PARA BAIXA
+⚡ EMA 8 cruzou EMA 21 PARA BAIXO
 
 🔥 FORÇA:
 {score}%
 
-🎯 Entrada:
+📍 Distância EMAs:
+{distancia}
+
+💰 PREÇO:
 {preco}
 
-🛑 Stop:
-{round(last['supertrend'],4)}
-
+📡 WEBSOCKET REALTIME
 ⚡ DETECÇÃO INTRABAR
-⚡ WEBSOCKET REALTIME
 """
 
         send(msg)
@@ -312,82 +346,101 @@ def process_signal(symbol, df):
         signals.append({
             "symbol": symbol.upper(),
             "type": "SELL",
-            "price": preco,
             "score": score,
+            "price": preco,
             "time": datetime.now(timezone).strftime("%H:%M:%S")
         })
 
-        sent_alerts[symbol] = 'sell'
+        sent_alerts[symbol] = "sell"
 
 # ==========================================
 # WEBSOCKET
 # ==========================================
 def on_message(ws, message):
 
-    data = json.loads(message)
+    try:
 
-    if 'k' not in data:
-        return
+        data = json.loads(message)
 
-    kline = data['k']
+        if "data" not in data:
+            return
 
-    symbol = data['s'].lower()
+        kline = data["data"]["k"]
 
-    close = float(kline['c'])
-    high = float(kline['h'])
-    low = float(kline['l'])
-    open_price = float(kline['o'])
-    volume = float(kline['v'])
+        symbol = data["data"]["s"].lower()
 
-    if symbol not in market_data:
-        return
+        close = float(kline["c"])
+        high = float(kline["h"])
+        low = float(kline["l"])
+        open_price = float(kline["o"])
+        volume = float(kline["v"])
 
-    df = market_data[symbol]
+        if symbol not in market_data:
+            return
 
-    # Atualiza última vela EM TEMPO REAL
-    df.iloc[-1, df.columns.get_loc('open')] = open_price
-    df.iloc[-1, df.columns.get_loc('high')] = high
-    df.iloc[-1, df.columns.get_loc('low')] = low
-    df.iloc[-1, df.columns.get_loc('close')] = close
-    df.iloc[-1, df.columns.get_loc('volume')] = volume
+        df = market_data[symbol]
 
-    market_data[symbol] = df
+        # ==========================================
+        # ATUALIZA ÚLTIMA VELA EM TEMPO REAL
+        # ==========================================
+        df.iloc[-1, df.columns.get_loc("open")] = open_price
+        df.iloc[-1, df.columns.get_loc("high")] = high
+        df.iloc[-1, df.columns.get_loc("low")] = low
+        df.iloc[-1, df.columns.get_loc("close")] = close
+        df.iloc[-1, df.columns.get_loc("volume")] = volume
 
-    process_signal(symbol, df)
+        market_data[symbol] = df
+
+        # ==========================================
+        # PROCESSA SINAL
+        # ==========================================
+        process_signal(symbol, df)
+
+    except Exception as e:
+
+        print("Erro websocket:", e)
 
 # ==========================================
 # START
 # ==========================================
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     keep_alive()
 
     send("""
-🤖 BOT SUPERTREND PRO ATIVO
-
-⚡ MODO:
-WEBSOCKET REALTIME
+🤖 BOT EMA CROSS REALTIME ATIVO
 
 ⚡ ESTRATÉGIA:
-Virada instantânea da Supertrend
+EMA 8 x EMA 21
+
+⚡ MODO:
+INTRABAR REALTIME
 
 ⚡ DETECÇÃO:
-Intrabar
+CRUZAMENTO INSTANTÂNEO
 
-⚡ SISTEMA:
-Score de força
+📡 WEBSOCKET BINANCE ATIVO
 """)
 
-    # Carrega histórico
+    # ==========================================
+    # CARREGA HISTÓRICO
+    # ==========================================
     for symbol in symbols:
+
         try:
+
             market_data[symbol] = load_history(symbol)
+
             print(f"{symbol} carregado")
 
         except Exception as e:
+
             print(symbol, e)
 
-    streams = '/'.join([
+    # ==========================================
+    # STREAMS
+    # ==========================================
+    streams = "/".join([
         f"{symbol}@kline_5m"
         for symbol in symbols
     ])
@@ -396,64 +449,12 @@ Score de força
         f"wss://stream.binance.com:9443/stream?streams={streams}"
     )
 
+    # ==========================================
+    # WEBSOCKET
+    # ==========================================
     ws = WebSocketApp(
         socket,
         on_message=on_message
     )
 
     ws.run_forever()
-```
-
-# requirements.txt
-
-```txt
-flask
-requests
-pandas
-python-binance
-websocket-client
-gunicorn
-```
-
-# COMO FUNCIONA AGORA
-
-## 1. Binance envia dados em tempo real
-
-```text
-BINANCE
-   ↓
-WEBSOCKET
-   ↓
-BOT RECEBE TICK INSTANTÂNEO
-```
-
-## 2. O bot recalcula a Supertrend DURANTE a vela
-
-```text
-VELA AINDA FORMANDO
-       ↓
-SUPERTREND MUDA
-       ↓
-ALERTA IMEDIATO
-```
-
-## 3. O Telegram recebe instantaneamente
-
-Exemplo:
-
-🟢⬆️ VIRADA SUPERTREND REALTIME
-
-📊 SOLUSDT
-🔥 FORÇA: 92%
-⚡ DETECÇÃO INTRABAR
-
-# O QUE MELHOROU
-
-✅ Não espera candle fechar
-✅ Detecção quase instantânea
-✅ Menos atraso
-✅ Dashboard continua funcionando
-✅ Multi-moedas
-✅ Tempo real verdadeiro
-✅ Score de força
-✅ Websocket profissional
