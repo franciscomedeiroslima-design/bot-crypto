@@ -10,7 +10,6 @@ from threading import Thread
 
 from flask import Flask, jsonify
 from websocket import WebSocketApp
-from binance.client import Client
 
 # ==========================================
 # FLASK
@@ -42,11 +41,6 @@ def keep_alive():
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-BINANCE_KEY = os.getenv("BINANCE_KEY")
-BINANCE_SECRET = os.getenv("BINANCE_SECRET")
-
-client = Client(BINANCE_KEY, BINANCE_SECRET)
-
 timezone = ZoneInfo("America/Sao_Paulo")
 
 # ==========================================
@@ -62,10 +56,10 @@ symbols = [
     "atomusdt",
     "aptusdt",
     "ondousdt",
-    "seiUsdt".lower(),
+    "seiusdt",
     "imxusdt",
     "galausdt",
-    "algoUsdt".lower(),
+    "algousdt",
     "jasmyusdt",
     "tonusdt"
 ]
@@ -74,13 +68,15 @@ symbols = [
 # ESTADO
 # ==========================================
 signals = []
+
 sent_alerts = {}
+
 market_data = {}
 
+last_candle_time = {}
+
 state = {
-    "last_heartbeat": time.time(),
-    "api_error_sent": False,
-    "bot_error_sent": False
+    "last_heartbeat": time.time()
 }
 
 # ==========================================
@@ -107,37 +103,6 @@ def send(msg):
         print("Erro Telegram:", e)
 
 # ==========================================
-# HISTÓRICO
-# ==========================================
-def load_history(symbol):
-
-    klines = client.get_klines(
-        symbol=symbol.upper(),
-        interval=Client.KLINE_INTERVAL_5MINUTE,
-        limit=200
-    )
-
-    df = pd.DataFrame(klines, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","num_trades",
-        "taker_base","taker_quote","ignore"
-    ])
-
-    df = df[[
-        "time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume"
-    ]]
-
-    for col in ["open","high","low","close","volume"]:
-        df[col] = pd.to_numeric(df[col])
-
-    return df
-
-# ==========================================
 # EMA
 # ==========================================
 def calculate_ema(df):
@@ -161,123 +126,132 @@ def calculate_ema(df):
 # ==========================================
 def calculate_score(df):
 
-    last = df.iloc[-1]
+    try:
 
-    distancia = abs(
-        (last["ema8"] - last["ema21"])
-        / last["ema21"]
-    ) * 100
+        last = df.iloc[-1]
 
-    volume_ma = (
-        df["volume"]
-        .rolling(20)
-        .mean()
-        .iloc[-1]
-    )
-
-    score = 0
-
-    # ==========================================
-    # DISTÂNCIA ENTRE EMAs
-    # ==========================================
-    if distancia > 0.30:
-        score += 40
-
-    elif distancia > 0.15:
-        score += 25
-
-    else:
-        score += 10
-
-    # ==========================================
-    # VOLUME
-    # ==========================================
-    if last["volume"] > volume_ma * 2:
-        score += 40
-
-    elif last["volume"] > volume_ma * 1.5:
-        score += 25
-
-    else:
-        score += 10
-
-    # ==========================================
-    # FORÇA DO CANDLE
-    # ==========================================
-    candle = abs(
-        last["close"] - last["open"]
-    )
-
-    range_candle = (
-        last["high"] - last["low"]
-    )
-
-    if range_candle > 0:
-
-        body_percent = (
-            candle / range_candle
+        distancia = abs(
+            (last["ema8"] - last["ema21"])
+            / last["ema21"]
         ) * 100
 
-        if body_percent > 70:
-            score += 20
-
-        elif body_percent > 50:
-            score += 10
-
-    return min(round(score), 100)
-
-# ==========================================
-# DETECÇÃO EMA CROSS REALTIME
-# ==========================================
-def process_signal(symbol, df):
-
-    df = calculate_ema(df)
-
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    preco = round(last["close"], 4)
-
-    # ==========================================
-    # DISTÂNCIA ENTRE EMAs
-    # ==========================================
-    dist_prev = (
-        prev["ema8"] - prev["ema21"]
-    )
-
-    dist_now = (
-        last["ema8"] - last["ema21"]
-    )
-
-    # ==========================================
-    # COMPRA
-    # ==========================================
-    cruzando_compra = (
-        dist_prev < 0 and
-        dist_now > 0
-    )
-
-    # ==========================================
-    # VENDA
-    # ==========================================
-    cruzando_venda = (
-        dist_prev > 0 and
-        dist_now < 0
-    )
-
-    score = calculate_score(df)
-
-    # ==========================================
-    # ALERTA COMPRA
-    # ==========================================
-    if cruzando_compra and sent_alerts.get(symbol) != "buy":
-
-        distancia = round(
-            abs(dist_now),
-            5
+        volume_ma = (
+            df["volume"]
+            .rolling(20)
+            .mean()
+            .iloc[-1]
         )
 
-        msg = f"""
+        score = 0
+
+        # ==========================================
+        # DISTÂNCIA EMAs
+        # ==========================================
+        if distancia > 0.30:
+            score += 40
+
+        elif distancia > 0.15:
+            score += 25
+
+        else:
+            score += 10
+
+        # ==========================================
+        # VOLUME
+        # ==========================================
+        if volume_ma > 0:
+
+            if last["volume"] > volume_ma * 2:
+                score += 40
+
+            elif last["volume"] > volume_ma * 1.5:
+                score += 25
+
+            else:
+                score += 10
+
+        # ==========================================
+        # FORÇA CANDLE
+        # ==========================================
+        candle = abs(
+            last["close"] - last["open"]
+        )
+
+        range_candle = (
+            last["high"] - last["low"]
+        )
+
+        if range_candle > 0:
+
+            body_percent = (
+                candle / range_candle
+            ) * 100
+
+            if body_percent > 70:
+                score += 20
+
+            elif body_percent > 50:
+                score += 10
+
+        return min(round(score), 100)
+
+    except:
+        return 0
+
+# ==========================================
+# PROCESSA SINAL
+# ==========================================
+def process_signal(symbol):
+
+    try:
+
+        df = market_data[symbol]
+
+        if len(df) < 25:
+            return
+
+        df = calculate_ema(df)
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        preco = round(last["close"], 4)
+
+        # ==========================================
+        # DISTÂNCIA ENTRE EMAs
+        # ==========================================
+        dist_prev = (
+            prev["ema8"] - prev["ema21"]
+        )
+
+        dist_now = (
+            last["ema8"] - last["ema21"]
+        )
+
+        # ==========================================
+        # CRUZAMENTO COMPRA
+        # ==========================================
+        cruzou_compra = (
+            dist_prev < 0 and
+            dist_now > 0
+        )
+
+        # ==========================================
+        # CRUZAMENTO VENDA
+        # ==========================================
+        cruzou_venda = (
+            dist_prev > 0 and
+            dist_now < 0
+        )
+
+        score = calculate_score(df)
+
+        # ==========================================
+        # COMPRA
+        # ==========================================
+        if cruzou_compra and sent_alerts.get(symbol) != "buy":
+
+            msg = f"""
 🟢⬆️ CRUZAMENTO EMA REALTIME
 
 📊 {symbol.upper()}
@@ -288,9 +262,6 @@ def process_signal(symbol, df):
 🔥 FORÇA:
 {score}%
 
-📍 Distância EMAs:
-{distancia}
-
 💰 PREÇO:
 {preco}
 
@@ -298,29 +269,24 @@ def process_signal(symbol, df):
 ⚡ DETECÇÃO INTRABAR
 """
 
-        send(msg)
+            send(msg)
 
-        signals.append({
-            "symbol": symbol.upper(),
-            "type": "BUY",
-            "score": score,
-            "price": preco,
-            "time": datetime.now(timezone).strftime("%H:%M:%S")
-        })
+            signals.append({
+                "symbol": symbol.upper(),
+                "type": "BUY",
+                "score": score,
+                "price": preco,
+                "time": datetime.now(timezone).strftime("%H:%M:%S")
+            })
 
-        sent_alerts[symbol] = "buy"
+            sent_alerts[symbol] = "buy"
 
-    # ==========================================
-    # ALERTA VENDA
-    # ==========================================
-    elif cruzando_venda and sent_alerts.get(symbol) != "sell":
+        # ==========================================
+        # VENDA
+        # ==========================================
+        elif cruzou_venda and sent_alerts.get(symbol) != "sell":
 
-        distancia = round(
-            abs(dist_now),
-            5
-        )
-
-        msg = f"""
+            msg = f"""
 🔴⬇️ CRUZAMENTO EMA REALTIME
 
 📊 {symbol.upper()}
@@ -331,9 +297,6 @@ def process_signal(symbol, df):
 🔥 FORÇA:
 {score}%
 
-📍 Distância EMAs:
-{distancia}
-
 💰 PREÇO:
 {preco}
 
@@ -341,20 +304,26 @@ def process_signal(symbol, df):
 ⚡ DETECÇÃO INTRABAR
 """
 
-        send(msg)
+            send(msg)
 
-        signals.append({
-            "symbol": symbol.upper(),
-            "type": "SELL",
-            "score": score,
-            "price": preco,
-            "time": datetime.now(timezone).strftime("%H:%M:%S")
-        })
+            signals.append({
+                "symbol": symbol.upper(),
+                "type": "SELL",
+                "score": score,
+                "price": preco,
+                "time": datetime.now(timezone).strftime("%H:%M:%S")
+            })
 
-        sent_alerts[symbol] = "sell"
+            sent_alerts[symbol] = "sell"
+
+        market_data[symbol] = df
+
+    except Exception as e:
+
+        print("Erro signal:", e)
 
 # ==========================================
-# WEBSOCKET
+# WEBSOCKET MESSAGE
 # ==========================================
 def on_message(ws, message):
 
@@ -365,40 +334,177 @@ def on_message(ws, message):
         if "data" not in data:
             return
 
+        if "k" not in data["data"]:
+            return
+
         kline = data["data"]["k"]
 
         symbol = data["data"]["s"].lower()
 
-        close = float(kline["c"])
+        candle_time = kline["t"]
+
+        open_price = float(kline["o"])
         high = float(kline["h"])
         low = float(kline["l"])
-        open_price = float(kline["o"])
+        close = float(kline["c"])
         volume = float(kline["v"])
 
+        candle_closed = kline["x"]
+
+        # ==========================================
+        # PRIMEIRA VEZ
+        # ==========================================
         if symbol not in market_data:
-            return
+
+            market_data[symbol] = pd.DataFrame(columns=[
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
+            ])
 
         df = market_data[symbol]
 
         # ==========================================
-        # ATUALIZA ÚLTIMA VELA EM TEMPO REAL
+        # SEM DADOS AINDA
         # ==========================================
-        df.iloc[-1, df.columns.get_loc("open")] = open_price
-        df.iloc[-1, df.columns.get_loc("high")] = high
-        df.iloc[-1, df.columns.get_loc("low")] = low
-        df.iloc[-1, df.columns.get_loc("close")] = close
-        df.iloc[-1, df.columns.get_loc("volume")] = volume
+        if len(df) == 0:
+
+            new_row = {
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume
+            }
+
+            df.loc[len(df)] = new_row
+
+            market_data[symbol] = df
+
+            return
+
+        # ==========================================
+        # NOVA VELA
+        # ==========================================
+        if symbol not in last_candle_time:
+
+            last_candle_time[symbol] = candle_time
+
+        if candle_time != last_candle_time[symbol]:
+
+            new_row = {
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume
+            }
+
+            df.loc[len(df)] = new_row
+
+            last_candle_time[symbol] = candle_time
+
+            # ==========================================
+            # LIMITA MEMÓRIA
+            # ==========================================
+            if len(df) > 200:
+                df = df.iloc[-200:]
+
+        else:
+
+            # ==========================================
+            # ATUALIZA VELA ATUAL
+            # ==========================================
+            df.iloc[-1, df.columns.get_loc("open")] = open_price
+            df.iloc[-1, df.columns.get_loc("high")] = high
+            df.iloc[-1, df.columns.get_loc("low")] = low
+            df.iloc[-1, df.columns.get_loc("close")] = close
+            df.iloc[-1, df.columns.get_loc("volume")] = volume
 
         market_data[symbol] = df
 
         # ==========================================
-        # PROCESSA SINAL
+        # PROCESSA EM TEMPO REAL
         # ==========================================
-        process_signal(symbol, df)
+        process_signal(symbol)
 
     except Exception as e:
 
         print("Erro websocket:", e)
+
+# ==========================================
+# WEBSOCKET OPEN
+# ==========================================
+def on_open(ws):
+
+    print("WebSocket conectado")
+
+    params = [
+        f"{symbol}@kline_5m"
+        for symbol in symbols
+    ]
+
+    payload = {
+        "method": "SUBSCRIBE",
+        "params": params,
+        "id": 1
+    }
+
+    ws.send(json.dumps(payload))
+
+    send("""
+🤖 BOT EMA CROSS REALTIME ATIVO
+
+⚡ Estratégia:
+EMA 8 x EMA 21
+
+⚡ MODO:
+INTRABAR REALTIME
+
+📡 Binance WebSocket conectado
+""")
+
+# ==========================================
+# WEBSOCKET ERROR
+# ==========================================
+def on_error(ws, error):
+
+    print("Erro websocket:", error)
+
+# ==========================================
+# WEBSOCKET CLOSE
+# ==========================================
+def on_close(ws, close_status_code, close_msg):
+
+    print("WebSocket fechado")
+
+# ==========================================
+# HEARTBEAT
+# ==========================================
+def heartbeat():
+
+    while True:
+
+        try:
+
+            if time.time() - state["last_heartbeat"] >= 14400:
+
+                send("""
+📡 BOT ONLINE
+
+✅ WebSocket ativo
+✅ EMA Cross ativo
+✅ Tempo real funcionando
+""")
+
+                state["last_heartbeat"] = time.time()
+
+            time.sleep(60)
+
+        except:
+            pass
 
 # ==========================================
 # START
@@ -407,54 +513,28 @@ if __name__ == "__main__":
 
     keep_alive()
 
-    send("""
-🤖 BOT EMA CROSS REALTIME ATIVO
+    Thread(target=heartbeat).start()
 
-⚡ ESTRATÉGIA:
-EMA 8 x EMA 21
-
-⚡ MODO:
-INTRABAR REALTIME
-
-⚡ DETECÇÃO:
-CRUZAMENTO INSTANTÂNEO
-
-📡 WEBSOCKET BINANCE ATIVO
-""")
-
-    # ==========================================
-    # CARREGA HISTÓRICO
-    # ==========================================
-    for symbol in symbols:
+    while True:
 
         try:
 
-            market_data[symbol] = load_history(symbol)
+            socket = (
+                "wss://stream.binance.com:9443/ws"
+            )
 
-            print(f"{symbol} carregado")
+            ws = WebSocketApp(
+                socket,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
+
+            ws.run_forever()
 
         except Exception as e:
 
-            print(symbol, e)
+            print("Reconectando:", e)
 
-    # ==========================================
-    # STREAMS
-    # ==========================================
-    streams = "/".join([
-        f"{symbol}@kline_5m"
-        for symbol in symbols
-    ])
-
-    socket = (
-        f"wss://stream.binance.com:9443/stream?streams={streams}"
-    )
-
-    # ==========================================
-    # WEBSOCKET
-    # ==========================================
-    ws = WebSocketApp(
-        socket,
-        on_message=on_message
-    )
-
-    ws.run_forever()
+            time.sleep(5)
